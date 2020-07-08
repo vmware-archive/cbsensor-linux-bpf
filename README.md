@@ -39,4 +39,4 @@ as an open-source patch. For more detailed information, refer to [CONTRIBUTING.m
 [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
-The cbsensor-linux-bpf licenses the BPF kernel space source code under [GNU GPL v2.0](LICENSE-GPL2.0). The example usage source code is licensed under the [BSD 2-Clause](LICENSE-BSD2).
+The cbsensor-linux-bpf licenses the BPF kernel space source code under [GNU GPL v2.0](LICENSE-GPL2.0). The example usage source code is licensed under [BSD 2](LICENSE-BSD2).
