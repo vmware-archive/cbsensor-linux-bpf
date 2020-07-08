@@ -5,7 +5,7 @@
 The cbsensor-linux-bpf project currently provides a [BCC](https://github.com/iovisor/bcc) compatibile BPF C source code for general process, file and network events.
 
 ## Try it out
-Run the examples [script](examples/bcc_sample.py) on your favorite Linux distro with BCC. Just run with root-like privileges, or whatever privileges you need to load a BPF program.
+Run the example [script](examples/bcc_sample.py) on your favorite Linux distro with BCC. Just run with root-like privileges, or whatever privileges you need to load a BPF program.
 
 ```bash
 sudo ./examples/bcc_sample.py ./src/bcc_sensor.c
@@ -14,7 +14,7 @@ sudo ./examples/bcc_sample.py ./src/bcc_sensor.c
 ### Prerequisites
 * Works on 4.4 kernels and newer!
 * bcc or libbpf for Ubuntu distros
-* More bleeding edge kernels might require a newer version of BCC your distro provides
+* More bleeding edge kernels might require a newer version of BCC than your distro provides
 
 ## Documentation
 
