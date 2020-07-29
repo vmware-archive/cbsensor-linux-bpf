@@ -14,7 +14,7 @@
 #include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/fs_struct.h>
-#include <linux/magic.h>
+#include <linux/kdev_t.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/mount.h>
@@ -226,11 +226,21 @@ static inline unsigned int __get_mnt_ns_id(struct task_struct *task)
     return 0;
 }
 
+static inline void __set_device_from_sb(struct data_t *data, struct super_block *sb)
+{
+    if (!data || !sb)
+    {
+        return;
+    }
+
+    data->device = new_encode_dev(sb->s_dev);
+}
+
 static inline void __set_device_from_file(struct data_t *data, struct file *file)
 {
     struct super_block *sb = NULL;
 
-    if (!file)
+    if (!data || !file)
     {
         return;
     }
@@ -240,7 +250,7 @@ static inline void __set_device_from_file(struct data_t *data, struct file *file
     {
         return;
     }
-    data->device = sb->s_dev;
+    __set_device_from_sb(data, sb);
 }
 
 // Assumed current context is what is valid!
@@ -394,6 +404,48 @@ static inline int __do_file_path(struct pt_regs *ctx,
         }
     }
     
+out:
+    data->state = PP_FINALIZED;
+    return 0;
+}
+
+static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry, struct data_t *data)
+{
+    struct dentry *cd = NULL;
+    struct dentry *pe = NULL;
+    struct qstr sp = {};
+
+    bpf_probe_read(&sp, sizeof(struct qstr), (void *)&(dentry->d_name));
+    if (sp.name == NULL)
+    {
+        goto out;
+    }
+    bpf_probe_read(&data->fname, sizeof(data->fname), (void *)sp.name);
+
+    bpf_probe_read(&pe, sizeof(pe), &(dentry->d_parent));
+    bpf_probe_read(&cd, sizeof(cd), &(dentry));
+    data->state = PP_PATH_COMPONENT;
+
+#pragma unroll
+    for (int i = 0; i < MAX_PATH_ITER; i++) {
+        if (pe == cd || pe == NULL)
+        {
+            break;
+        }
+        bpf_probe_read(&sp, sizeof(struct qstr), (void *)&(cd->d_name));
+        if((void *)sp.name != NULL)
+        {
+            bpf_probe_read(data->fname, sizeof(data->fname), (void *)sp.name);
+            events.perf_submit(ctx, data, sizeof(*data));
+        }
+
+        bpf_probe_read(&cd, sizeof(cd), &(pe));
+        bpf_probe_read(&pe, sizeof(pe), &(pe->d_parent));
+    }
+
+    data->fname[0] = '\0';
+    events.perf_submit(ctx, data, sizeof(*data));
+
 out:
     data->state = PP_FINALIZED;
     return 0;
@@ -595,7 +647,7 @@ int trace_write_entry(struct pt_regs *ctx,
     }
 #endif
     __set_key_entry_data(&data, file);
-    data.device = sb->s_dev;
+    __set_device_from_sb(&data, sb);
 
     u32 *cachep; 
     u64 file_cache_key = (u64)file;
@@ -627,7 +679,18 @@ out:
     return 0;
 }
 
-// This hook may not be very acurrate but at least tells us the intent
+struct file_data
+{
+    u64  device;
+    u64  inode;
+};
+
+// This hash tracks the "observed" file-create events.  This will not be 100% accurate because we will report a
+//  file create for any file the first time it is opened with WRITE|TRUNCATE (even if it already exists).  It
+//  will however serve to de-dup some events.  (Ie.. If a program does frequent open/write/close.)
+BPF_HASH(file_map, struct file_data, u32, 500);
+
+// This hook may not be very accurate but at least tells us the intent
 // to create the file if needed. So this will likely be written to next.
 int on_security_file_open(struct pt_regs *ctx, struct file *file)
 {
@@ -669,10 +732,28 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
     }
 #endif
     __set_key_entry_data(&data, file);
-    data.device = sb->s_dev;
+    __set_device_from_sb(&data, sb);
 
-    u32 *cachep; 
+    u32 *cachep;
     u64 file_cache_key = (u64)file;
+
+    struct file_data key = {
+        .device = data.device,
+        .inode  = data.inode
+    };
+
+    // If this is already tracked skip the event.  Otherwise add it to the tracking table.
+    u32 *file_exists = file_map.lookup(&key);
+    if (file_exists)
+    {
+        goto out;
+    }
+    else
+    {
+        file_map.update(&key, &data.pid);
+    }
+
+
 
     cachep = file_creat_cache.lookup(&file_cache_key);
     if (cachep)
@@ -694,6 +775,60 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
     events.perf_submit(ctx, &data, sizeof(data));
 
     __do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
+
+    events.perf_submit(ctx, &data, sizeof(data));
+
+out:
+    return 0;
+}
+
+int on_security_inode_unlink(struct pt_regs *ctx, struct inode *dir, struct dentry *dentry)
+{
+    struct data_t data = {};
+    struct super_block *sb    = NULL;
+    struct inode       *inode = NULL;
+    int                mode;
+
+    if (!dentry)
+    {
+        goto out;
+    }
+
+    sb = _sb_from_dentry(dentry);
+    if (!sb)
+    {
+        goto out;
+    }
+
+    if (__is_special_filesystem(sb))
+    {
+        goto out;
+    }
+
+    __set_key_entry_data(&data, NULL);
+
+    bpf_probe_read(&inode, sizeof(inode), &(dentry->d_inode));
+    if (inode)
+    {
+        bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
+    }
+
+    __set_device_from_sb(&data, sb);
+
+    // Delete the file from the tracking so that it will be reported the next time it is created.
+    struct file_data key = {
+        .device = data.device,
+        .inode  = data.inode
+    };
+
+    file_map.delete(&key);
+
+    data.state = PP_ENTRY_POINT;
+    data.type  = EVENT_FILE_DELETE;
+    events.perf_submit(ctx, &data, sizeof(data));
+
+    __do_dentry_path(ctx, dentry, &data);
+
     events.perf_submit(ctx, &data, sizeof(data));
 
 out:

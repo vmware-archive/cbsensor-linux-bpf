@@ -107,6 +107,8 @@ EVENT_TYPE = EventType()
 
 class FileEvent(object):
 	filepath = ""
+	mounts   = None
+
 	def __init__(self, event_msg):
 		self.ev_type = event_msg.ev_type
 		self.event_time = event_msg.event_time
@@ -122,24 +124,50 @@ class FileEvent(object):
 		else:
 			self.event_type_str = "UNKNOWN"
 
+	# We could poll /proc/self/mounts then
+	# get the devices and mountpoints from /proc/self/mountinfo
+	def get_mounts(self):
+		if not self.mounts:
+			self.mounts = {}
+			fh = open("/proc/self/mountinfo", "r")
+			for line in fh:
+				x = line.split(" ")
+				dev = x[2].split(":")
+				# Device major minor in dev_t may be architecture specific
+				# Not sure how well this holds up
+				dev_num = (int(dev[0]) << 8) | (int(dev[1]))
+				self.mounts[dev_num] = x[4][1:]
+				#print("%d:%d => %#x" % (int(dev[0]), int(dev[1]), dev_num))
+		return self.mounts
+
+	def get_mount_name(self):
+		_mounts = self.get_mounts()
+		if _mounts:
+			if self.device in _mounts:
+				return _mounts[self.device]
+		return ""
+
 	def update(self, event_msg):
 		if event_msg.state == EVENT_TYPE.PP_PATH_COMPONENT:
-			self.filepath = '/%s%s' % (event_msg.union.fname.decode(), self.filepath)
+			name = event_msg.union.fname.decode()
+			if not len(name):
+				name = self.get_mount_name()
+			self.filepath = '/%s%s' % (name, self.filepath)
 		elif (event_msg.state == EVENT_TYPE.PP_FINALIZE):
 			return self.logstr()
 
 	# Perhaps add mmap args
 	# uid may not always be set
 	def logstr(self):
-		file_event_str = '%lu %s pid:%d ppid:%d uid:%d mnt_ns:%d %lu[%#08x]%s' % (
+		file_event_str = '%lu %s pid:%d ppid:%d uid:%d mnt_ns:%d [%x:%lu]%s' % (
 			self.event_time,
 			self.event_type_str,
 			self.pid,
 			self.ppid,
 			self.uid,
 			self.mnt_ns,
-			self.inode,
 			self.device,
+			self.inode,
 			self.filepath,
 		)
 		return file_event_str
@@ -162,15 +190,15 @@ class CloneEvent(object):
 		pathstr = self.filepath
 		if not pathstr:
 			pathstr = self.comm
-		event_str = '%lu FORK pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%s %lu[%#08x]%s' % (
+		event_str = '%lu FORK pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%s [%x:%lu]%s' % (
 			self.event_time,
 			self.pid,
 			self.ppid,
 			self.uid,
 			self.start_time,
 			self.mnt_ns,
-			self.inode,
 			self.device,
+			self.inode,
 			pathstr,
 		)
 		return event_str
@@ -222,15 +250,15 @@ class ExecEvent(object):
 	def logstr(self):
 		args = self.arg_str
 
-		exec_event_str = '%lu EXEC pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%s %lu[%#08x]%s ret:%d \'%s\'' % (
+		exec_event_str = '%lu EXEC pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%s [%x:%lu]%s ret:%d \'%s\'' % (
 			self.event_time,
 			self.pid,
 			self.ppid,
 			self.uid,
 			self.start_time,
 			self.mnt_ns,
-			self.inode,
 			self.device,
+			self.inode,
 			self.filepath,
 			self.retval,
 			self.arg_str,
@@ -465,6 +493,10 @@ def attach_probes(bcc):
 			pp='security_file_open',
 			pp_cb_name='on_security_file_open',
 		),
+		Probe(
+			pp='security_inode_unlink',
+			pp_cb_name='on_security_inode_unlink',
+		),
 
 		# execve and execveat syscalls
 		Probe(
@@ -584,6 +616,8 @@ if __name__ == '__main__':
 		bcc = load_script(bcc_kernel_script=bpf_source)
 		attach_probes(bcc)
 		load_perf_callback(bcc)
+
+		print("Waiting for events...")
 		while True:
 			bcc.perf_buffer_poll()
 
