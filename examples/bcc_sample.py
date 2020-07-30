@@ -325,18 +325,17 @@ class NetEvent(object):
 		if event_msg.union.net.proto == 17:
 			self.proto = "UDP"
 
-		# Should not have to run htons here oh well
-		self.sport = int(event_msg.union.net.sport)
-		self.dport = int(event_msg.union.net.dport)
+		self.sport = socket.ntohs(int(event_msg.union.net.sport))
+		self.dport = socket.ntohs(int(event_msg.union.net.dport))
 
 		if event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT:
 			if event_msg.union.net.proto == 17:
-				self.sport = socket.htons(int(event_msg.union.net.sport))
-				self.dport = socket.htons(int(event_msg.union.net.dport))
+				self.sport = socket.ntohs(int(event_msg.union.net.sport))
+				self.dport = socket.ntohs(int(event_msg.union.net.dport))
 			self.flow = "rx"
 		elif event_msg.ev_type == EVENT_TYPE.CONNECT_PRE:
 			self.flow = "tx"
-			self.dport = socket.htons(int(event_msg.union.net.dport))
+			self.dport = socket.ntohs(int(event_msg.union.net.dport))
 
 		# AF_INET
 		if event_msg.union.net.ipver == socket.AF_INET:
@@ -358,6 +357,10 @@ class NetEvent(object):
 				event_msg.union.net.daddr6[2],
 				event_msg.union.net.daddr6[3],
 			)
+		else:
+			self.family = socket.AF_INET
+			self.pack_saddr = struct.pack("I", 0)
+			self.pack_daddr = struct.pack("I", 0)
 
 
 	def logstr(self):

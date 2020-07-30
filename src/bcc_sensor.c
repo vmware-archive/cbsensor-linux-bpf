@@ -1094,7 +1094,13 @@ int trace_connect_v6_entry(struct pt_regs *ctx, struct sock *sk)
     return 0;
 }
 
-static int trace_connect_return(struct pt_regs *ctx, short ipver)
+static inline bool check_family(struct sock *sk, u16 expected_family)
+{
+    u16 family = sk->__sk_common.skc_family;
+    return family == expected_family;
+}
+
+static int trace_connect_return(struct pt_regs *ctx)
 {
     u64 id   = bpf_get_current_pid_tgid();
     u32 pid = id >> 32;
@@ -1125,7 +1131,7 @@ static int trace_connect_return(struct pt_regs *ctx, short ipver)
     data.net.sport          = sockp->inet_sport;
 
 
-    if(ipver == 4)
+    if(check_family(skp, AF_INET))
     {
         data.net.ipver = AF_INET;
         data.net.saddr = skp->__sk_common.skc_rcv_saddr;
@@ -1133,7 +1139,7 @@ static int trace_connect_return(struct pt_regs *ctx, short ipver)
 
         events.perf_submit(ctx, &data, sizeof(data));
     }
-    else
+    else if(check_family(skp, AF_INET6))
     {
         data.net.ipver = AF_INET6;
         bpf_probe_read(&data.net.saddr6,
@@ -1152,18 +1158,12 @@ static int trace_connect_return(struct pt_regs *ctx, short ipver)
 
 int trace_connect_v4_return(struct pt_regs *ctx)
 {
-    return trace_connect_return(ctx, 4);
+    return trace_connect_return(ctx);
 }
 
 int trace_connect_v6_return(struct pt_regs *ctx)
 {
-    return trace_connect_return(ctx, 6);
-}
-
-static inline bool check_family(struct sock *sk, u16 expected_family)
-{
-    u16 family = sk->__sk_common.skc_family;
-    return family == expected_family;
+    return trace_connect_return(ctx);
 }
 
 int trace_skb_recv_udp(struct pt_regs *ctx)
@@ -1191,13 +1191,11 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
     }
 #endif
     struct udphdr *udphdr = NULL;
-    struct iphdr *iphdr = NULL;
 
-    iphdr = (struct iphdr *)(skb->head + skb->network_header);
-
-    uint8_t version = 0;
-
-    bpf_probe_read(&version, 1, ((u8 *)&iphdr->tos) - 1);
+    // Get a pointer to the network header and the header length.
+    //  We use the header length to decide if this is IPv4 or IPv6
+    void *hdr     = (struct iphdr *)(skb->head + skb->network_header);
+    u32   hdr_len = skb->transport_header - skb->network_header;
 
     struct data_t data = {};
 
@@ -1206,26 +1204,17 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
     
     data.net.protocol = IP_PROTO_UDP;
 
-    // Before the bitfield read access is directly available in bcc:
-    //  - use next struct member with a byte offset to copy area of bitfield containing the version info
-    //  - use masks and shift based on endianness to get the IP version
-
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    version = (version & 0xF0);
-    version = version >> 4;
-#else
-    version = (version & 0x0F);
-#endif
-
     udphdr = (struct udphdr *)(skb->head + skb->transport_header);
-    data.net.dport = udphdr->dest;
-    data.net.sport = udphdr->source;
+    data.net.dport = udphdr->source;
+    data.net.sport = udphdr->dest;
 
-    if (version == 4)
+    if(hdr_len == sizeof(struct iphdr))
     {
+        struct iphdr *iphdr = (struct iphdr *)hdr;
+
         data.net.ipver = AF_INET;
-        data.net.saddr = iphdr->saddr;
-        data.net.daddr = iphdr->daddr;
+        data.net.saddr = iphdr->daddr;
+        data.net.daddr = iphdr->saddr;
 
 #ifdef CACHE_UDP
         struct ip_key ip_key = {};
@@ -1241,16 +1230,16 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
         }
 #endif /* CACHE_UDP */
     }
-    else
+    else if(hdr_len == sizeof(struct ipv6hdr))
     {
         // Why IPv6 address/port is read in a differen way than IPv4:
         //  - BPF C compiled to BPF instructions don't always do what we expect
         //  - especially when accessing members of a struct containing bitfields
+        struct ipv6hdr *ipv6hdr = (struct ipv6hdr *)hdr;
 
         data.net.ipver = AF_INET6;
-        struct ipv6hdr *ipv6hdr = (struct ipv6hdr *)iphdr;
-        bpf_probe_read(data.net.saddr6, sizeof(uint32_t) * 4, &ipv6hdr->saddr.s6_addr32);
-        bpf_probe_read(data.net.daddr6, sizeof(uint32_t) * 4, &ipv6hdr->daddr.s6_addr32);
+        bpf_probe_read(data.net.saddr6, sizeof(uint32_t) * 4, &ipv6hdr->daddr.s6_addr32);
+        bpf_probe_read(data.net.daddr6, sizeof(uint32_t) * 4, &ipv6hdr->saddr.s6_addr32);
 
 #ifdef CACHE_UDP
         struct ip6_key ip_key = {};
@@ -1288,18 +1277,18 @@ int trace_accept_return(struct pt_regs *ctx)
 
     __set_key_entry_data(&data, NULL);
     data.type = EVENT_NET_CONNECT_ACCEPT;
+    data.net.protocol = IP_PROTO_TCP;
+
+    data.net.ipver = newsk->__sk_common.skc_family;
+    bpf_probe_read(&data.net.sport, sizeof(newsk->__sk_common.skc_num), &newsk->__sk_common.skc_num);
+    data.net.sport = htons(data.net.sport);
+    data.net.dport = newsk->__sk_common.skc_dport; // network order dport
 
 
     if(check_family(newsk, AF_INET))
     {
-        data.net.ipver = AF_INET;
-
-        data.net.protocol = IP_PROTO_TCP;
         data.net.saddr    = newsk->__sk_common.skc_rcv_saddr;
         data.net.daddr    = newsk->__sk_common.skc_daddr;
-
-        data.net.sport = newsk->__sk_common.skc_num; // host order sport
-        data.net.dport = newsk->__sk_common.skc_dport; // network order dport
 
         if(data.net.saddr != 0 && data.net.daddr != 0 && data.net.sport != 0 &&
            data.net.dport != 0)
@@ -1309,18 +1298,12 @@ int trace_accept_return(struct pt_regs *ctx)
     }
     else if(check_family(newsk, AF_INET6))
     {
-        data.net.ipver = AF_INET6;
-
         bpf_probe_read(&data.net.saddr6,
                        sizeof(data.net.saddr6),
                        newsk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
         bpf_probe_read(&data.net.daddr6,
                        sizeof(data.net.daddr6),
                        newsk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
-
-        data.net.sport = newsk->__sk_common.skc_num;
-        u16 dport      = newsk->__sk_common.skc_dport;
-        data.net.dport = dport;
 
         events.perf_submit(ctx, &data, sizeof(data));
     }
@@ -1456,15 +1439,16 @@ int trace_udp_sendmsg_return(struct pt_regs *ctx,
 
     // get ip version
     struct sock *skp = *skpp;
-    data.net.ipver   = skp->__sk_common.skc_family;
 
-    if(data.net.ipver == AF_INET)
+    data.net.ipver   = skp->__sk_common.skc_family;
+    bpf_probe_read(&data.net.sport, sizeof(skp->__sk_common.skc_num), &skp->__sk_common.skc_num);
+    data.net.sport   = htons(data.net.sport);
+    data.net.dport   = skp->__sk_common.skc_dport; // already network order
+
+    if(check_family(skp, AF_INET))
     {
         data.net.daddr = skp->__sk_common.skc_daddr;
-        data.net.dport = skp->__sk_common.skc_dport; // already network order
-
         data.net.saddr = skp->__sk_common.skc_rcv_saddr;
-        data.net.sport = skp->__sk_common.skc_num; // host order sport
 
 #ifdef CACHE_UDP
         struct ip_key ip_key = {};
@@ -1481,16 +1465,14 @@ int trace_udp_sendmsg_return(struct pt_regs *ctx,
         }
 #endif /* CACHE_UDP */
     }
-    else
+    else if(check_family(skp, AF_INET6))
     {
-        data.net.dport = skp->__sk_common.skc_dport;
         bpf_probe_read(&data.net.daddr6,
                        sizeof(data.net.daddr6),
                        &(skp->__sk_common.skc_v6_daddr.in6_u.u6_addr32));
         bpf_probe_read(&data.net.saddr6,
                        sizeof(data.net.saddr6),
                        &(skp->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32));
-        data.net.sport = skp->__sk_common.skc_num; // host order sport
 
 #ifdef CACHE_UDP
         struct ip6_key ip_key = {};
@@ -1570,29 +1552,24 @@ CATCH:
     // TODO: calculate real url length
     int len = PROXY_SERVER_MAX_LEN;
 
-    if(sk->sk_family == AF_INET)
-    {
-        data.net.ipver = AF_INET;
+    data.net.ipver = sk->__sk_common.skc_family;
+    bpf_probe_read(&data.net.sport, sizeof(sk->__sk_common.skc_num), &sk->__sk_common.skc_num);
+    data.net.sport = htons(data.net.sport);
+    data.net.dport = sk->__sk_common.skc_dport;
 
+    if(check_family(sk, AF_INET))
+    {
         data.net.saddr = sk->__sk_common.skc_rcv_saddr;
         data.net.daddr = sk->__sk_common.skc_daddr;
-
-        data.net.sport = sk->__sk_common.skc_num; // host order sport
-        u16 dport      = sk->__sk_common.skc_dport;
-        data.net.dport = ntohs(dport); // host order dport
     }
-    else
+    else if(check_family(sk, AF_INET6))
     {
-        data.net.ipver = AF_INET6;
         bpf_probe_read(&data.net.saddr6,
                        sizeof(data.net.saddr6),
                        sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
         bpf_probe_read(&data.net.daddr6,
                        sizeof(data.net.daddr6),
                        sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
-        data.net.sport = sk->__sk_common.skc_num; // host order sport
-        u16 dport      = sk->__sk_common.skc_dport;
-        data.net.dport = ntohs(dport); // host order dport
     }
 
     p = p + offset + 1;
