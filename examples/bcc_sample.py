@@ -8,6 +8,7 @@ import ctypes
 import socket
 import struct
 from bcc import BPF
+import argparse
 
 class NetEventData(ctypes.Structure):
 	_fields_ = [
@@ -79,6 +80,7 @@ class EventType(object):
 	event_type_map = {
 		PROCESS_ARG : 'PROCESS_ARG',
 		PROCESS_EXEC : 'PROCESS_EXEC',
+		PROCESS_EXIT : 'PROCESS_EXIT',
 		PROCESS_CLONE : 'PROCESS_CLONE',
 		FILE_READ : 'FILE_READ',
 		FILE_WRITE : 'FILE_WRITE',
@@ -89,6 +91,23 @@ class EventType(object):
 		DNS_RESPONSE : 'DNS_RESPONSE',
 		WEB_PROXY : 'WEB_PROXY',
 		FILE_DELETE : 'FILE_DELETE',
+	}
+
+	enabled_types_map = {
+		PROCESS_ARG : True,
+		PROCESS_EXEC : True,
+		PROCESS_EXIT : True,
+		PROCESS_CLONE : True,
+		FILE_READ : True,
+		FILE_WRITE : True,
+		FILE_CREATE : True,
+		FILE_MMAP : True,
+		FILE_TEST : True,
+		CONNECT_PRE : True,
+		CONNECT_ACCEPT : True,
+		DNS_RESPONSE : True,
+		WEB_PROXY : True,
+		FILE_DELETE : True,
 	}
 
 	PP_NO_EXTRA_DATA = 0
@@ -102,6 +121,24 @@ class EventType(object):
 		PP_PATH_COMPONENT : 'PP_PATH_COMPONENT',
 		PP_FINALIZE : 'PP_FINALIZE',
 	}
+
+	def SetTypeEnabledState(self, args):
+		self.enabled_types_map[self.FILE_MMAP] = not args.disable_mmap
+		self.enabled_types_map[self.FILE_READ] = not args.disable_file
+		self.enabled_types_map[self.FILE_WRITE] = not args.disable_file
+		self.enabled_types_map[self.FILE_CREATE] = not args.disable_file
+		self.enabled_types_map[self.FILE_DELETE] = not args.disable_file
+		self.enabled_types_map[self.PROCESS_ARG] = not args.disable_process
+		self.enabled_types_map[self.PROCESS_EXEC] = not args.disable_process
+		self.enabled_types_map[self.PROCESS_EXIT] = not args.disable_process
+		self.enabled_types_map[self.PROCESS_CLONE] = not args.disable_process
+		self.enabled_types_map[self.CONNECT_PRE] = not args.disable_net
+		self.enabled_types_map[self.CONNECT_ACCEPT] = not args.disable_net
+		self.enabled_types_map[self.WEB_PROXY] = not args.disable_net
+		self.enabled_types_map[self.DNS_RESPONSE] = not args.disable_dns
+
+	def IsTypeEnabled(self, type):
+		return self.enabled_types_map[type]
 
 EVENT_TYPE = EventType()
 
@@ -424,32 +461,34 @@ def handle_network_event(event_msg):
 
 def perf_event_cb(cpu, data, size):
 	event_msg = ctypes.cast(data, ctypes.POINTER(SensorEventMessage)).contents
-	if event_msg.ev_type == EVENT_TYPE.PROCESS_CLONE:
-		ret = handle_clone_event(event_msg)
-		if ret:
-			print(ret)
-	elif event_msg.ev_type == EVENT_TYPE.PROCESS_EXIT:
-		handle_exit_event(event_msg)
-	elif (event_msg.ev_type == EVENT_TYPE.PROCESS_EXEC or 
-		event_msg.ev_type == EVENT_TYPE.PROCESS_ARG):
-		ret = handle_exec_event(event_msg)
-		if ret:
-			print(ret)
-	elif (event_msg.ev_type == EVENT_TYPE.CONNECT_PRE or
-		  event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT):
-		ret = handle_network_event(event_msg)
-		if ret:
-			print(ret)
-	elif (event_msg.ev_type == EVENT_TYPE.DNS_RESPONSE or
-		  event_msg.ev_type == EVENT_TYPE.WEB_PROXY):
-		handle_dns_event(event_msg)
-	elif (event_msg.ev_type == EVENT_TYPE.FILE_WRITE or 
-		  event_msg.ev_type == EVENT_TYPE.FILE_MMAP or
-		  event_msg.ev_type == EVENT_TYPE.FILE_CREATE or
-		  event_msg.ev_type == EVENT_TYPE.FILE_DELETE):
-		ret = handle_file_event(event_msg)
-		if ret:
-			print(ret)
+
+	if EVENT_TYPE.IsTypeEnabled(event_msg.ev_type):
+		if event_msg.ev_type == EVENT_TYPE.PROCESS_CLONE:
+			ret = handle_clone_event(event_msg)
+			if ret:
+				print(ret)
+		elif event_msg.ev_type == EVENT_TYPE.PROCESS_EXIT:
+			handle_exit_event(event_msg)
+		elif (event_msg.ev_type == EVENT_TYPE.PROCESS_EXEC or
+			event_msg.ev_type == EVENT_TYPE.PROCESS_ARG):
+			ret = handle_exec_event(event_msg)
+			if ret:
+				print(ret)
+		elif (event_msg.ev_type == EVENT_TYPE.CONNECT_PRE or
+			  event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT):
+			ret = handle_network_event(event_msg)
+			if ret:
+				print(ret)
+		elif (event_msg.ev_type == EVENT_TYPE.DNS_RESPONSE or
+			  event_msg.ev_type == EVENT_TYPE.WEB_PROXY):
+			handle_dns_event(event_msg)
+		elif (event_msg.ev_type == EVENT_TYPE.FILE_WRITE or
+			  event_msg.ev_type == EVENT_TYPE.FILE_MMAP or
+			  event_msg.ev_type == EVENT_TYPE.FILE_CREATE or
+			  event_msg.ev_type == EVENT_TYPE.FILE_DELETE):
+			ret = handle_file_event(event_msg)
+			if ret:
+				print(ret)
 
 
 def load_script(bcc_kernel_script):
@@ -605,15 +644,35 @@ def attach_probes(bcc):
 		else:
 			bcc.attach_kprobe(event=probe.pp, fn_name=probe.pp_cb_name)
 
+
+def parseArgs(provided_args=None):
+	arg_parser  = argparse.ArgumentParser(description="BPF Test App")
+
+	# Control what events are printed
+	arg_parser.add_argument("-m", "--disable-mmap", action="store_true", help="Disable MMAP event printing",
+							 dest="disable_mmap", default=False)
+	arg_parser.add_argument("-f", "--disable-file", action="store_true", help="Disable FILE event printing",
+							dest="disable_file", default=False)
+	arg_parser.add_argument("-p", "--disable-process", action="store_true", help="Disable PROCESS event printing",
+							dest="disable_process", default=False)
+	arg_parser.add_argument("-n", "--disable-net", action="store_true", help="Disable NET event printing",
+							dest="disable_net", default=False)
+	arg_parser.add_argument("-d", "--disable-dns", action="store_true", help="Disable DNS event printing",
+							dest="disable_dns", default=False)
+
+	# BPF Source file
+	arg_parser.add_argument("bpf_source", action="store", help="BPF Probe File")
+
+	return arg_parser.parse_args(provided_args)
+
 if __name__ == '__main__':
 	def main():
 		import sys
 
-		bpf_source = 'bcc_sensor.c'
-		if len(sys.argv) > 1:
-			bpf_source = sys.argv[1]
+		args = parseArgs()
+		EVENT_TYPE.SetTypeEnabledState(args)
 
-		bcc = load_script(bcc_kernel_script=bpf_source)
+		bcc = load_script(bcc_kernel_script=args.bpf_source)
 		attach_probes(bcc)
 		load_perf_callback(bcc)
 
