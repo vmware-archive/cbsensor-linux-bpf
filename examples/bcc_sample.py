@@ -8,18 +8,19 @@ import ctypes
 import socket
 import struct
 from bcc import BPF
+import argparse
 
 class NetEventData(ctypes.Structure):
 	_fields_ = [
-		('saddr', ctypes.c_uint),
-		('daddr', ctypes.c_uint),
-		('dport', ctypes.c_ushort),
-		('sport', ctypes.c_ushort),
+		('local_addr', ctypes.c_uint),
+		('remote_addr', ctypes.c_uint),
+		('remote_port', ctypes.c_ushort),
+		('local_port', ctypes.c_ushort),
 		('ipver', ctypes.c_ushort),
 		('proto', ctypes.c_ushort),
 		('dns_flag', ctypes.c_ushort),
-		('saddr6', ctypes.c_uint * 4),
-		('daddr6', ctypes.c_uint * 4),
+		('local_addr6', ctypes.c_uint * 4),
+		('remote_addr6', ctypes.c_uint * 4),
 		('dns', ctypes.c_char * 40),
 		('name_len', ctypes.c_uint),
 	]
@@ -79,6 +80,7 @@ class EventType(object):
 	event_type_map = {
 		PROCESS_ARG : 'PROCESS_ARG',
 		PROCESS_EXEC : 'PROCESS_EXEC',
+		PROCESS_EXIT : 'PROCESS_EXIT',
 		PROCESS_CLONE : 'PROCESS_CLONE',
 		FILE_READ : 'FILE_READ',
 		FILE_WRITE : 'FILE_WRITE',
@@ -89,6 +91,23 @@ class EventType(object):
 		DNS_RESPONSE : 'DNS_RESPONSE',
 		WEB_PROXY : 'WEB_PROXY',
 		FILE_DELETE : 'FILE_DELETE',
+	}
+
+	enabled_types_map = {
+		PROCESS_ARG : True,
+		PROCESS_EXEC : True,
+		PROCESS_EXIT : True,
+		PROCESS_CLONE : True,
+		FILE_READ : True,
+		FILE_WRITE : True,
+		FILE_CREATE : True,
+		FILE_MMAP : True,
+		FILE_TEST : True,
+		CONNECT_PRE : True,
+		CONNECT_ACCEPT : True,
+		DNS_RESPONSE : True,
+		WEB_PROXY : True,
+		FILE_DELETE : True,
 	}
 
 	PP_NO_EXTRA_DATA = 0
@@ -102,6 +121,24 @@ class EventType(object):
 		PP_PATH_COMPONENT : 'PP_PATH_COMPONENT',
 		PP_FINALIZE : 'PP_FINALIZE',
 	}
+
+	def SetTypeEnabledState(self, args):
+		self.enabled_types_map[self.FILE_MMAP] = not args.disable_mmap
+		self.enabled_types_map[self.FILE_READ] = not args.disable_file
+		self.enabled_types_map[self.FILE_WRITE] = not args.disable_file
+		self.enabled_types_map[self.FILE_CREATE] = not args.disable_file
+		self.enabled_types_map[self.FILE_DELETE] = not args.disable_file
+		self.enabled_types_map[self.PROCESS_ARG] = not args.disable_process
+		self.enabled_types_map[self.PROCESS_EXEC] = not args.disable_process
+		self.enabled_types_map[self.PROCESS_EXIT] = not args.disable_process
+		self.enabled_types_map[self.PROCESS_CLONE] = not args.disable_process
+		self.enabled_types_map[self.CONNECT_PRE] = not args.disable_net
+		self.enabled_types_map[self.CONNECT_ACCEPT] = not args.disable_net
+		self.enabled_types_map[self.WEB_PROXY] = not args.disable_net
+		self.enabled_types_map[self.DNS_RESPONSE] = not args.disable_dns
+
+	def IsTypeEnabled(self, type):
+		return self.enabled_types_map[type]
 
 EVENT_TYPE = EventType()
 
@@ -282,45 +319,48 @@ class NetEvent(object):
 
 		self.flow = None
 		self.family = None
-		self.pack_saddr = None
-		self.pack_daddr = None
+		self.pack_local_addr = None
+		self.pack_remote_addr = None
 		self.proto = "TCP"
 		if event_msg.union.net.proto == 17:
 			self.proto = "UDP"
 
-		# Should not have to run htons here oh well
-		self.sport = int(event_msg.union.net.sport)
-		self.dport = int(event_msg.union.net.dport)
+		self.local_port = socket.ntohs(int(event_msg.union.net.local_port))
+		self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 
 		if event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT:
 			if event_msg.union.net.proto == 17:
-				self.sport = socket.htons(int(event_msg.union.net.sport))
-				self.dport = socket.htons(int(event_msg.union.net.dport))
+				self.local_port = socket.ntohs(int(event_msg.union.net.local_port))
+				self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 			self.flow = "rx"
 		elif event_msg.ev_type == EVENT_TYPE.CONNECT_PRE:
 			self.flow = "tx"
-			self.dport = socket.htons(int(event_msg.union.net.dport))
+			self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 
 		# AF_INET
 		if event_msg.union.net.ipver == socket.AF_INET:
 			self.family = socket.AF_INET
-			self.pack_saddr = struct.pack("I", event_msg.union.net.saddr)
-			self.pack_daddr = struct.pack("I", event_msg.union.net.daddr)
+			self.pack_local_addr = struct.pack("I", event_msg.union.net.local_addr)
+			self.pack_remote_addr = struct.pack("I", event_msg.union.net.remote_addr)
 		# AF_INET6
 		elif event_msg.union.net.ipver == socket.AF_INET6:
 			self.family = socket.AF_INET6
-			self.pack_saddr = struct.pack("IIII",
-				event_msg.union.net.saddr6[0],
-				event_msg.union.net.saddr6[1],
-				event_msg.union.net.saddr6[2],
-				event_msg.union.net.saddr6[3],
+			self.pack_local_addr = struct.pack("IIII",
+				event_msg.union.net.local_addr6[0],
+				event_msg.union.net.local_addr6[1],
+				event_msg.union.net.local_addr6[2],
+				event_msg.union.net.local_addr6[3],
 			)
-			self.pack_daddr = struct.pack("IIII",
-				event_msg.union.net.daddr6[0],
-				event_msg.union.net.daddr6[1],
-				event_msg.union.net.daddr6[2],
-				event_msg.union.net.daddr6[3],
+			self.pack_remote_addr = struct.pack("IIII",
+				event_msg.union.net.remote_addr6[0],
+				event_msg.union.net.remote_addr6[1],
+				event_msg.union.net.remote_addr6[2],
+				event_msg.union.net.remote_addr6[3],
 			)
+		else:
+			self.family = socket.AF_INET
+			self.pack_local_addr = struct.pack("I", 0)
+			self.pack_remote_addr = struct.pack("I", 0)
 
 
 	def logstr(self):
@@ -329,10 +369,10 @@ class NetEvent(object):
 			self.ev_type_str,
 			self.proto,
 			self.pid,
-			socket.inet_ntop(self.family, self.pack_saddr),
-			self.sport,
-			socket.inet_ntop(self.family, self.pack_daddr),
-			self.dport,
+			socket.inet_ntop(self.family, self.pack_local_addr),
+			self.local_port,
+			socket.inet_ntop(self.family, self.pack_remote_addr),
+			self.remote_port,
 		)
 		return net_event_str
 
@@ -424,32 +464,34 @@ def handle_network_event(event_msg):
 
 def perf_event_cb(cpu, data, size):
 	event_msg = ctypes.cast(data, ctypes.POINTER(SensorEventMessage)).contents
-	if event_msg.ev_type == EVENT_TYPE.PROCESS_CLONE:
-		ret = handle_clone_event(event_msg)
-		if ret:
-			print(ret)
-	elif event_msg.ev_type == EVENT_TYPE.PROCESS_EXIT:
-		handle_exit_event(event_msg)
-	elif (event_msg.ev_type == EVENT_TYPE.PROCESS_EXEC or 
-		event_msg.ev_type == EVENT_TYPE.PROCESS_ARG):
-		ret = handle_exec_event(event_msg)
-		if ret:
-			print(ret)
-	elif (event_msg.ev_type == EVENT_TYPE.CONNECT_PRE or
-		  event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT):
-		ret = handle_network_event(event_msg)
-		if ret:
-			print(ret)
-	elif (event_msg.ev_type == EVENT_TYPE.DNS_RESPONSE or
-		  event_msg.ev_type == EVENT_TYPE.WEB_PROXY):
-		handle_dns_event(event_msg)
-	elif (event_msg.ev_type == EVENT_TYPE.FILE_WRITE or 
-		  event_msg.ev_type == EVENT_TYPE.FILE_MMAP or
-		  event_msg.ev_type == EVENT_TYPE.FILE_CREATE or
-		  event_msg.ev_type == EVENT_TYPE.FILE_DELETE):
-		ret = handle_file_event(event_msg)
-		if ret:
-			print(ret)
+
+	if EVENT_TYPE.IsTypeEnabled(event_msg.ev_type):
+		if event_msg.ev_type == EVENT_TYPE.PROCESS_CLONE:
+			ret = handle_clone_event(event_msg)
+			if ret:
+				print(ret)
+		elif event_msg.ev_type == EVENT_TYPE.PROCESS_EXIT:
+			handle_exit_event(event_msg)
+		elif (event_msg.ev_type == EVENT_TYPE.PROCESS_EXEC or
+			event_msg.ev_type == EVENT_TYPE.PROCESS_ARG):
+			ret = handle_exec_event(event_msg)
+			if ret:
+				print(ret)
+		elif (event_msg.ev_type == EVENT_TYPE.CONNECT_PRE or
+			  event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT):
+			ret = handle_network_event(event_msg)
+			if ret:
+				print(ret)
+		elif (event_msg.ev_type == EVENT_TYPE.DNS_RESPONSE or
+			  event_msg.ev_type == EVENT_TYPE.WEB_PROXY):
+			handle_dns_event(event_msg)
+		elif (event_msg.ev_type == EVENT_TYPE.FILE_WRITE or
+			  event_msg.ev_type == EVENT_TYPE.FILE_MMAP or
+			  event_msg.ev_type == EVENT_TYPE.FILE_CREATE or
+			  event_msg.ev_type == EVENT_TYPE.FILE_DELETE):
+			ret = handle_file_event(event_msg)
+			if ret:
+				print(ret)
 
 
 def load_script(bcc_kernel_script):
@@ -605,15 +647,35 @@ def attach_probes(bcc):
 		else:
 			bcc.attach_kprobe(event=probe.pp, fn_name=probe.pp_cb_name)
 
+
+def parseArgs(provided_args=None):
+	arg_parser  = argparse.ArgumentParser(description="BPF Test App")
+
+	# Control what events are printed
+	arg_parser.add_argument("-m", "--disable-mmap", action="store_true", help="Disable MMAP event printing",
+							 dest="disable_mmap", default=False)
+	arg_parser.add_argument("-f", "--disable-file", action="store_true", help="Disable FILE event printing",
+							dest="disable_file", default=False)
+	arg_parser.add_argument("-p", "--disable-process", action="store_true", help="Disable PROCESS event printing",
+							dest="disable_process", default=False)
+	arg_parser.add_argument("-n", "--disable-net", action="store_true", help="Disable NET event printing",
+							dest="disable_net", default=False)
+	arg_parser.add_argument("-d", "--disable-dns", action="store_true", help="Disable DNS event printing",
+							dest="disable_dns", default=False)
+
+	# BPF Source file
+	arg_parser.add_argument("bpf_source", action="store", help="BPF Probe File")
+
+	return arg_parser.parse_args(provided_args)
+
 if __name__ == '__main__':
 	def main():
 		import sys
 
-		bpf_source = 'bcc_sensor.c'
-		if len(sys.argv) > 1:
-			bpf_source = sys.argv[1]
+		args = parseArgs()
+		EVENT_TYPE.SetTypeEnabledState(args)
 
-		bcc = load_script(bcc_kernel_script=bpf_source)
+		bcc = load_script(bcc_kernel_script=args.bpf_source)
 		attach_probes(bcc)
 		load_perf_callback(bcc)
 
