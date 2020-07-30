@@ -12,15 +12,15 @@ import argparse
 
 class NetEventData(ctypes.Structure):
 	_fields_ = [
-		('saddr', ctypes.c_uint),
-		('daddr', ctypes.c_uint),
-		('dport', ctypes.c_ushort),
-		('sport', ctypes.c_ushort),
+		('local_addr', ctypes.c_uint),
+		('remote_addr', ctypes.c_uint),
+		('remote_port', ctypes.c_ushort),
+		('local_port', ctypes.c_ushort),
 		('ipver', ctypes.c_ushort),
 		('proto', ctypes.c_ushort),
 		('dns_flag', ctypes.c_ushort),
-		('saddr6', ctypes.c_uint * 4),
-		('daddr6', ctypes.c_uint * 4),
+		('local_addr6', ctypes.c_uint * 4),
+		('remote_addr6', ctypes.c_uint * 4),
 		('dns', ctypes.c_char * 40),
 		('name_len', ctypes.c_uint),
 	]
@@ -319,48 +319,48 @@ class NetEvent(object):
 
 		self.flow = None
 		self.family = None
-		self.pack_saddr = None
-		self.pack_daddr = None
+		self.pack_local_addr = None
+		self.pack_remote_addr = None
 		self.proto = "TCP"
 		if event_msg.union.net.proto == 17:
 			self.proto = "UDP"
 
-		self.sport = socket.ntohs(int(event_msg.union.net.sport))
-		self.dport = socket.ntohs(int(event_msg.union.net.dport))
+		self.local_port = socket.ntohs(int(event_msg.union.net.local_port))
+		self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 
 		if event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT:
 			if event_msg.union.net.proto == 17:
-				self.sport = socket.ntohs(int(event_msg.union.net.sport))
-				self.dport = socket.ntohs(int(event_msg.union.net.dport))
+				self.local_port = socket.ntohs(int(event_msg.union.net.local_port))
+				self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 			self.flow = "rx"
 		elif event_msg.ev_type == EVENT_TYPE.CONNECT_PRE:
 			self.flow = "tx"
-			self.dport = socket.ntohs(int(event_msg.union.net.dport))
+			self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 
 		# AF_INET
 		if event_msg.union.net.ipver == socket.AF_INET:
 			self.family = socket.AF_INET
-			self.pack_saddr = struct.pack("I", event_msg.union.net.saddr)
-			self.pack_daddr = struct.pack("I", event_msg.union.net.daddr)
+			self.pack_local_addr = struct.pack("I", event_msg.union.net.local_addr)
+			self.pack_remote_addr = struct.pack("I", event_msg.union.net.remote_addr)
 		# AF_INET6
 		elif event_msg.union.net.ipver == socket.AF_INET6:
 			self.family = socket.AF_INET6
-			self.pack_saddr = struct.pack("IIII",
-				event_msg.union.net.saddr6[0],
-				event_msg.union.net.saddr6[1],
-				event_msg.union.net.saddr6[2],
-				event_msg.union.net.saddr6[3],
+			self.pack_local_addr = struct.pack("IIII",
+				event_msg.union.net.local_addr6[0],
+				event_msg.union.net.local_addr6[1],
+				event_msg.union.net.local_addr6[2],
+				event_msg.union.net.local_addr6[3],
 			)
-			self.pack_daddr = struct.pack("IIII",
-				event_msg.union.net.daddr6[0],
-				event_msg.union.net.daddr6[1],
-				event_msg.union.net.daddr6[2],
-				event_msg.union.net.daddr6[3],
+			self.pack_remote_addr = struct.pack("IIII",
+				event_msg.union.net.remote_addr6[0],
+				event_msg.union.net.remote_addr6[1],
+				event_msg.union.net.remote_addr6[2],
+				event_msg.union.net.remote_addr6[3],
 			)
 		else:
 			self.family = socket.AF_INET
-			self.pack_saddr = struct.pack("I", 0)
-			self.pack_daddr = struct.pack("I", 0)
+			self.pack_local_addr = struct.pack("I", 0)
+			self.pack_remote_addr = struct.pack("I", 0)
 
 
 	def logstr(self):
@@ -369,10 +369,10 @@ class NetEvent(object):
 			self.ev_type_str,
 			self.proto,
 			self.pid,
-			socket.inet_ntop(self.family, self.pack_saddr),
-			self.sport,
-			socket.inet_ntop(self.family, self.pack_daddr),
-			self.dport,
+			socket.inet_ntop(self.family, self.pack_local_addr),
+			self.local_port,
+			socket.inet_ntop(self.family, self.pack_remote_addr),
+			self.remote_port,
 		)
 		return net_event_str
 
