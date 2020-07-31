@@ -28,6 +28,28 @@
 #include <net/sock.h>
 #include <net/inet_sock.h>
 
+// Create BPF_LRU if it does not exist.
+//  This follows the form for other BPF_XXXX macros, so should work if it is ever added
+#ifndef BPF_LRU
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+        #define BPF_LRU1(_name) \
+                  BPF_TABLE("lru_hash", u64, u64, _name, 10240)
+        #define BPF_LRU2(_name, _key_type) \
+                  BPF_TABLE("lru_hash", _key_type, u64, _name, 10240)
+        #define BPF_LRU3(_name, _key_type, _leaf_type) \
+                  BPF_TABLE("lru_hash", _key_type, _leaf_type, _name, 10240)
+        // helper for default-variable macro function
+        #define BPF_LRUX(_1, _2, _3, NAME, ...) NAME
+
+        // Define a hash function, some arguments optional
+        // BPF_LRU(name, key_type=u64, leaf_type=u64, size=10240)
+        #define BPF_LRU(...) \
+                  BPF_LRUX(__VA_ARGS__, BPF_LRU3, BPF_LRU2, BPF_LRU1)(__VA_ARGS__)
+    #else
+        #define BPF_LRU BPF_HASH
+    #endif
+#endif
+
 #define CACHE_UDP
 
 struct mnt_namespace {
@@ -544,13 +566,8 @@ int after_sys_execve(struct pt_regs *ctx)
     return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
-BPF_TABLE("lru_hash", u64, u32, file_write_cache, 16384);
-BPF_TABLE("lru_hash", u64, u32, file_creat_cache, 16384);
-#else
-BPF_HASH(file_write_cache, u64, u32, 16384);
-BPF_HASH(file_creat_cache, u64, u32, 16384);
-#endif
+BPF_LRU(file_write_cache, u64, u32);
+BPF_LRU(file_creat_cache, u64, u32);
 
 // Only need this hook for kernels without lru_hash
 int on_security_file_free(struct pt_regs *ctx, struct file *file)
@@ -688,7 +705,7 @@ struct file_data
 // This hash tracks the "observed" file-create events.  This will not be 100% accurate because we will report a
 //  file create for any file the first time it is opened with WRITE|TRUNCATE (even if it already exists).  It
 //  will however serve to de-dup some events.  (Ie.. If a program does frequent open/write/close.)
-BPF_HASH(file_map, struct file_data, u32, 500);
+BPF_LRU(file_map, struct file_data, u32);
 
 // This hook may not be very accurate but at least tells us the intent
 // to create the file if needed. So this will likely be written to next.
@@ -936,14 +953,9 @@ struct ip6_key {
 struct ip_entry {
     u8 flow;
 };
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
-// UDP Burst cache
-BPF_TABLE("hash", u32, struct ip_key, ip_cache, 8192);
-BPF_TABLE("hash", u32, struct ip6_key, ip6_cache, 8192);
-#else
-BPF_TABLE("lru_hash", struct ip_key, struct ip_entry, ip_cache, 8192);
-BPF_TABLE("lru_hash", struct ip6_key, struct ip_entry, ip6_cache, 8192);
-#endif
+
+BPF_LRU(ip_cache, struct ip_key, struct ip_entry);
+BPF_LRU(ip6_cache, struct ip6_key, struct ip_entry);
 
 static inline bool has_ip_cache(struct ip_key *ip_key, u8 flow)
 {
@@ -1076,9 +1088,9 @@ out:
     return 0;
 }
 
-BPF_HASH(currsock, u64, struct sock *);
-BPF_HASH(currsock2, u64, struct msghdr *);
-BPF_HASH(currsock3, u64, struct sock *);
+BPF_LRU(currsock, u64, struct sock *);
+BPF_LRU(currsock2, u64, struct msghdr *);
+BPF_LRU(currsock3, u64, struct sock *);
 
 int trace_connect_v4_entry(struct pt_regs *ctx, struct sock *sk)
 {
