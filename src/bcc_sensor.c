@@ -122,6 +122,10 @@ struct mmap_args {
 #define PP_ENTRY_POINT 1
 #define PP_PATH_COMPONENT 2
 #define PP_FINALIZED 3
+#define PP_APPEND 4
+#define PP_DEBUG 5
+
+#define MAX_FNAME   255L
 
 struct data_t
 {
@@ -137,7 +141,7 @@ struct data_t
     u32 mnt_ns;
     union {
         struct mmap_args mmap_args;
-        char fname[255];
+        char fname[MAX_FNAME];
         struct net_t net;
     };
     int retval;
@@ -324,16 +328,20 @@ static inline void __set_key_entry_data(struct data_t *data, struct file *file)
     bpf_probe_read(&data->inode, sizeof(data->inode), &pinode->i_ino);
 }
 
-static int __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
+static u8 __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
 {
-    bpf_probe_read(data->fname, sizeof(data->fname), ptr);
+    // Note: On some kernels bpf_probe_read_str does not exist.  In this case it is
+    //  substituted by bpf_probe_read.  The return value for these two cases mean something
+    //  different, but that is OK for our logic.
+    // Note: On older kernel this may read past the actual arg list into the env.
+    // TODO: Add logic for older kernels
+    u8 result = bpf_probe_read_str(data->fname, MAX_FNAME, ptr);
     events.perf_submit(ctx, data, sizeof(struct data_t));
-    return 1;
+    return result;
 }
 
 static int submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
 {
-    //const char *argp = NULL;
     void *argp = NULL;
     bpf_probe_read(&argp, sizeof(argp), ptr);
     if(argp)
@@ -341,6 +349,66 @@ static int submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
         return __submit_arg(ctx, argp, data);
     }
     return 0;
+}
+
+#define MAXARG 30
+
+// PSCLNX-6764 - Improve EXEC event performance
+//  This logic should be refactored to write the multiple args into a single
+//  event buffer instead of one event per arg.
+static void submit_all_args(
+        struct pt_regs *ctx,
+        const char __user *const __user *_argv,
+        struct data_t *data)
+{
+    void *argp      = NULL;
+    void *next_argp = NULL;
+    int index       = 0;
+
+#pragma unroll
+    for(int i = 0; i < MAXARG; i++)
+    {
+        if (next_argp)
+        {
+            // If there is more data to read in this arg, we tell the collector
+            //  to continue with the previous arg (and not add a ' ').
+            data->state = PP_APPEND;
+            argp = next_argp;
+            next_argp = NULL;
+        }
+        else
+        {
+            // This is a new arg
+            data->state = PP_ENTRY_POINT;
+            bpf_probe_read(&argp, sizeof(argp), &_argv[index++]);
+        }
+        if(!argp)
+        {
+            // We have reached the last arg so bail out
+            goto out;
+        }
+
+        // Read the arg data and send an event.  We expect the result to be the bytes sent
+        //  in the event.  On older kernels, this may be 0 which is OK.  It just means that
+        //  we will always truncate the arg.
+        u8 bytes_written = __submit_arg(ctx, argp, data);
+        next_argp = NULL;
+
+        if (bytes_written == MAX_FNAME)
+        {
+            // If we have filled the buffer exactly, it means that there is additional
+            //  data for this arg.
+            // Advance the read pointer by the bytes written (minus the null terminator)
+            next_argp = argp + bytes_written - 1;
+        }
+    }
+
+    // handle truncated argument list
+    char ellipsis[] = "...";
+    __submit_arg(ctx, (void *)ellipsis, data);
+
+out:
+    return;
 }
 
 #ifndef MAX_PATH_ITER
@@ -477,7 +545,6 @@ out:
     return 0;
 }
 
-#define MAXARG 30
 int syscall__on_sys_execveat(struct pt_regs *ctx,
         int fd, const char __user *filename,
         const char __user *const __user *argv,
@@ -487,22 +554,11 @@ int syscall__on_sys_execveat(struct pt_regs *ctx,
     struct data_t       data = {};
 
     __set_key_entry_data(&data, NULL);
-    data.type       = EVENT_PROCESS_ARG;
+    data.type = EVENT_PROCESS_ARG;
     data.state = PP_ENTRY_POINT;
 
+    submit_all_args(ctx, argv, &data);
 
-#pragma unroll
-    for(int i = 0; i < MAXARG; i++)
-    {
-        if(submit_arg(ctx, (void *)&argv[i], &data) == 0)
-        {
-            goto out;
-        }
-    }
-
-    // handle truncated argument list
-    char ellipsis[] = "...";
-    __submit_arg(ctx, (void *)ellipsis, &data);
 out:
     return 0;
 }
@@ -514,20 +570,11 @@ int syscall__on_sys_execve(struct pt_regs *ctx,
     struct data_t       data = {};
 
     __set_key_entry_data(&data, NULL);
-    data.type       = EVENT_PROCESS_ARG;
+    data.type = EVENT_PROCESS_ARG;
     data.state = PP_ENTRY_POINT;
 
-#pragma unroll
-    for(int i = 0; i < MAXARG; i++)
-    {
-        if(submit_arg(ctx, (void *)&argv[i], &data) == 0)
-        {
-            goto out;
-        }
-    }
+    submit_all_args(ctx, argv, &data);
 
-    char ellipsis[] = "...";
-    __submit_arg(ctx, (void *)ellipsis, &data);
 out:
     return 0;
 }

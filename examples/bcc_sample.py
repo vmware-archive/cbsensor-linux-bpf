@@ -113,13 +113,17 @@ class EventType(object):
 	PP_NO_EXTRA_DATA = 0
 	PP_ENTRY_POINT = 1
 	PP_PATH_COMPONENT = 2
-	PP_FINALIZE = 3
+	PP_FINALIZED = 3
+	PP_APPEND = 4
+	PP_DEBUG = 5
 
 	msg_state = {
 		PP_NO_EXTRA_DATA : 'PP_NO_EXTRA_DATA',
 		PP_ENTRY_POINT : 'PP_ENTRY_POINT',
 		PP_PATH_COMPONENT : 'PP_PATH_COMPONENT',
-		PP_FINALIZE : 'PP_FINALIZE',
+		PP_FINALIZED : 'PP_FINALIZED',
+		PP_APPEND : 'PP_APPEND',
+		PP_DEBUG : 'PP_DEBUG',
 	}
 
 	def SetTypeEnabledState(self, args):
@@ -190,7 +194,7 @@ class FileEvent(object):
 			if not len(name):
 				name = self.get_mount_name()
 			self.filepath = '/%s%s' % (name, self.filepath)
-		elif (event_msg.state == EVENT_TYPE.PP_FINALIZE):
+		elif (event_msg.state == EVENT_TYPE.PP_FINALIZED):
 			return self.logstr()
 
 	# Perhaps add mmap args
@@ -265,11 +269,13 @@ class ExecEvent(object):
 	def update(self, event_msg):
 #		print(EVENT_TYPE.event_type_map[event_msg.ev_type], EVENT_TYPE.msg_state[event_msg.state])
 		if event_msg.ev_type == EVENT_TYPE.PROCESS_ARG:
-			if event_msg.state == EVENT_TYPE.PP_FINALIZE:
+			if event_msg.state == EVENT_TYPE.PP_FINALIZED:
 				self.retval = event_msg.retval
 				return self.logstr()
-			else:
+			elif event_msg.state == EVENT_TYPE.PP_ENTRY_POINT:
 				self.arg_str += ' ' + event_msg.union.fname.decode()
+			elif event_msg.state == EVENT_TYPE.PP_APPEND:
+				self.arg_str += event_msg.union.fname.decode()
 
 		if event_msg.ev_type == EVENT_TYPE.PROCESS_EXEC:
 			if event_msg.state == EVENT_TYPE.PP_ENTRY_POINT:
@@ -281,7 +287,7 @@ class ExecEvent(object):
 				self.mnt_ns = event_msg.mnt_ns
 			elif event_msg.state == EVENT_TYPE.PP_PATH_COMPONENT:
 				self.filepath = '/%s%s' % (event_msg.union.fname.decode(), self.filepath)
-			elif (event_msg.state == EVENT_TYPE.PP_FINALIZE):
+			elif (event_msg.state == EVENT_TYPE.PP_FINALIZED):
 				self.finalize_filepath = True
 
 	def logstr(self):
@@ -425,7 +431,7 @@ def handle_clone_event(event_msg):
 			clone_event_table[key].filepath)
 		return None
 
-	if event_msg.state == EVENT_TYPE.PP_FINALIZE:
+	if event_msg.state == EVENT_TYPE.PP_FINALIZED:
 		clone_event = clone_event_table[key]
 		del clone_event_table[key]
 		return clone_event.logstr()
@@ -471,7 +477,9 @@ def perf_event_cb(cpu, data, size):
 			if ret:
 				print(ret)
 		elif event_msg.ev_type == EVENT_TYPE.PROCESS_EXIT:
-			handle_exit_event(event_msg)
+			ret = handle_exit_event(event_msg)
+			if ret:
+				print(ret)
 		elif (event_msg.ev_type == EVENT_TYPE.PROCESS_EXEC or
 			event_msg.ev_type == EVENT_TYPE.PROCESS_ARG):
 			ret = handle_exec_event(event_msg)
