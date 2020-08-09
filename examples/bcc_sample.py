@@ -76,6 +76,7 @@ class EventType(object):
 	DNS_RESPONSE = 12
 	WEB_PROXY = 13
 	FILE_DELETE = 14
+	FILE_CLOSE = 15
 
 	event_type_map = {
 		PROCESS_ARG : 'PROCESS_ARG',
@@ -91,6 +92,7 @@ class EventType(object):
 		DNS_RESPONSE : 'DNS_RESPONSE',
 		WEB_PROXY : 'WEB_PROXY',
 		FILE_DELETE : 'FILE_DELETE',
+		FILE_CLOSE : 'FILE_CLOSE',
 	}
 
 	enabled_types_map = {
@@ -108,6 +110,7 @@ class EventType(object):
 		DNS_RESPONSE : True,
 		WEB_PROXY : True,
 		FILE_DELETE : True,
+		FILE_CLOSE : True,
 	}
 
 	PP_NO_EXTRA_DATA = 0
@@ -132,6 +135,7 @@ class EventType(object):
 		self.enabled_types_map[self.FILE_WRITE] = not args.disable_file
 		self.enabled_types_map[self.FILE_CREATE] = not args.disable_file
 		self.enabled_types_map[self.FILE_DELETE] = not args.disable_file
+		self.enabled_types_map[self.FILE_CLOSE] = not args.disable_file
 		self.enabled_types_map[self.PROCESS_ARG] = not args.disable_process
 		self.enabled_types_map[self.PROCESS_EXEC] = not args.disable_process
 		self.enabled_types_map[self.PROCESS_EXIT] = not args.disable_process
@@ -496,7 +500,8 @@ def perf_event_cb(cpu, data, size):
 		elif (event_msg.ev_type == EVENT_TYPE.FILE_WRITE or
 			  event_msg.ev_type == EVENT_TYPE.FILE_MMAP or
 			  event_msg.ev_type == EVENT_TYPE.FILE_CREATE or
-			  event_msg.ev_type == EVENT_TYPE.FILE_DELETE):
+			  event_msg.ev_type == EVENT_TYPE.FILE_DELETE or
+			  event_msg.ev_type == EVENT_TYPE.FILE_CLOSE):
 			ret = handle_file_event(event_msg)
 			if ret:
 				print(ret)

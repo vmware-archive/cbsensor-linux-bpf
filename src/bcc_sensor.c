@@ -82,6 +82,7 @@ enum event_type
     EVENT_NET_CONNECT_DNS_RESPONSE,
     EVENT_NET_CONNECT_WEB_PROXY,
     EVENT_FILE_DELETE,
+    EVENT_FILE_CLOSE,
 };
 
 #define DNS_RESP_PORT_NUM 53
@@ -617,7 +618,19 @@ int after_sys_execve(struct pt_regs *ctx)
     return 0;
 }
 
-BPF_LRU(file_write_cache, u64, u32);
+struct file_data
+{
+    u64  pid;
+    u64  device;
+    u64  inode;
+};
+
+// This hash tracks the "observed" file-create events.  This will not be 100% accurate because we will report a
+//  file create for any file the first time it is opened with WRITE|TRUNCATE (even if it already exists).  It
+//  will however serve to de-dup some events.  (Ie.. If a program does frequent open/write/close.)
+BPF_LRU(file_map, struct file_data, u32);
+
+BPF_LRU(file_write_cache, u64, struct file_data);
 BPF_LRU(file_creat_cache, u64, u32);
 
 // Only need this hook for kernels without lru_hash
@@ -628,6 +641,23 @@ int on_security_file_free(struct pt_regs *ctx, struct file *file)
         return 0;
     }
     u64 file_cache_key = (u64)file;
+
+    struct file_data *cachep = file_write_cache.lookup(&file_cache_key);
+    if (cachep)
+    {
+        struct data_t data = {};
+        __set_key_entry_data(&data, NULL);
+
+        data.device = cachep->device;
+        data.inode  = cachep->inode;
+
+        data.state = PP_ENTRY_POINT;
+        data.type = EVENT_FILE_CLOSE;
+        events.perf_submit(ctx, &data, sizeof(data));
+
+        __do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
+        events.perf_submit(ctx, &data, sizeof(data));
+    }
     
     file_write_cache.delete(&file_cache_key);
     file_creat_cache.delete(&file_cache_key);
@@ -717,24 +747,29 @@ int trace_write_entry(struct pt_regs *ctx,
     __set_key_entry_data(&data, file);
     __set_device_from_sb(&data, sb);
 
-    u32 *cachep; 
     u64 file_cache_key = (u64)file;
 
-    cachep = file_write_cache.lookup(&file_cache_key);
+    struct file_data *cachep = file_write_cache.lookup(&file_cache_key);
     if (cachep)
     {
         // if we really care about that multiple tasks 
         // these are likely threads or less likely inherited from a fork 
-        if (*cachep == data.pid)
+        if (cachep->pid == data.pid)
         {
             goto out;
         }
-        file_write_cache.update(&file_cache_key, &data.pid);
+        cachep->pid    = data.pid;
+        file_write_cache.update(&file_cache_key, cachep);
         goto out;
     }
     else
     {
-        file_write_cache.insert(&file_cache_key, &data.pid);
+        struct file_data cache_data = {
+                .pid    = data.pid,
+                .device = data.device,
+                .inode  = data.inode
+        };
+        file_write_cache.insert(&file_cache_key, &cache_data);
     }
 
     data.state = PP_ENTRY_POINT;
@@ -746,17 +781,6 @@ int trace_write_entry(struct pt_regs *ctx,
 out:
     return 0;
 }
-
-struct file_data
-{
-    u64  device;
-    u64  inode;
-};
-
-// This hash tracks the "observed" file-create events.  This will not be 100% accurate because we will report a
-//  file create for any file the first time it is opened with WRITE|TRUNCATE (even if it already exists).  It
-//  will however serve to de-dup some events.  (Ie.. If a program does frequent open/write/close.)
-BPF_LRU(file_map, struct file_data, u32);
 
 // This hook may not be very accurate but at least tells us the intent
 // to create the file if needed. So this will likely be written to next.
