@@ -50,6 +50,23 @@
     #endif
 #endif
 
+#ifndef PT_REGS_RC
+    #define PT_REGS_RC(x) ((x)->ax)
+#endif
+
+#ifndef bpf_probe_read_str
+    // Note that these functions are not 100% compatible.  The read_str function returns the number of bytes read,
+    //   while the old version returns 0 on success.  Some of the logic we use does depend on the non-zero result
+    //   (described later).
+    #define bpf_probe_read_str bpf_probe_read
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+    #define FALLBACK_FIELD_TYPE(A, B) A
+#else
+    #define FALLBACK_FIELD_TYPE(A, B) B
+#endif
+
 #define CACHE_UDP
 
 struct mnt_namespace {
@@ -152,7 +169,7 @@ struct data_t
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
 BPF_HASH(last_start_time, u32, u64, 8192);
 BPF_HASH(last_parent, u32, u32, 8192);
-BPF_HASH(root_fs, u32, u64, 3); // stores last known root fs
+BPF_HASH(root_fs, u32, void *, 3); // stores last known root fs
 #endif
 
 BPF_PERF_OUTPUT(events);
@@ -259,6 +276,11 @@ static inline unsigned int __get_mnt_ns_id(struct task_struct *task)
 
 static inline void __set_device_from_sb(struct data_t *data, struct super_block *sb)
 {
+    if (data)
+    {
+        data->device = 0;
+    }
+
     if (!data || !sb)
     {
         return;
@@ -270,6 +292,11 @@ static inline void __set_device_from_sb(struct data_t *data, struct super_block 
 static inline void __set_device_from_file(struct data_t *data, struct file *file)
 {
     struct super_block *sb = NULL;
+
+    if (data)
+    {
+        data->device = 0;
+    }
 
     if (!data || !file)
     {
@@ -284,11 +311,32 @@ static inline void __set_device_from_file(struct data_t *data, struct file *file
     __set_device_from_sb(data, sb);
 }
 
+static inline void __set_inode_from_file(struct data_t *data, struct file *file)
+{
+    struct inode *pinode = NULL;
+
+    if (data)
+    {
+        data->inode = 0;
+    }
+
+    if (!data || !file)
+    {
+        return;
+    }
+
+    bpf_probe_read(&pinode, sizeof(pinode), &(file->f_inode));
+    if (!pinode)
+    {
+        return;
+    }
+
+    bpf_probe_read(&data->inode, sizeof(data->inode), &pinode->i_ino);
+}
+
 // Assumed current context is what is valid!
 static inline void __set_key_entry_data(struct data_t *data, struct file *file)
 {
-    struct inode *pinode = NULL;
-    struct super_block *sb;
     u64 id; 
 
     data->event_time = bpf_ktime_get_ns();
@@ -316,17 +364,7 @@ static inline void __set_key_entry_data(struct data_t *data, struct file *file)
     }
 #endif
 
-    if (!file)
-    {
-        return;
-    }
-    bpf_probe_read(&pinode, sizeof(pinode), &(file->f_inode));
-    if (!pinode)
-    {
-        return;
-    }
-
-    bpf_probe_read(&data->inode, sizeof(data->inode), &pinode->i_ino);
+    __set_inode_from_file(data, file);
 }
 
 static u8 __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
@@ -335,24 +373,17 @@ static u8 __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
     //  substituted by bpf_probe_read.  The return value for these two cases mean something
     //  different, but that is OK for our logic.
     // Note: On older kernel this may read past the actual arg list into the env.
-    // TODO: Add logic for older kernels
     u8 result = bpf_probe_read_str(data->fname, MAX_FNAME, ptr);
     events.perf_submit(ctx, data, sizeof(struct data_t));
     return result;
 }
 
-static int submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
-{
-    void *argp = NULL;
-    bpf_probe_read(&argp, sizeof(argp), ptr);
-    if(argp)
-    {
-        return __submit_arg(ctx, argp, data);
-    }
-    return 0;
-}
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
 #define MAXARG 30
+#else
+#define MAXARG 25
+#endif
+
 
 // PSCLNX-6764 - Improve EXEC event performance
 //  This logic should be refactored to write the multiple args into a single
@@ -439,13 +470,13 @@ static inline int __do_file_path(struct pt_regs *ctx,
     }
 #else
     u32 index = 0;
-    struct dentry **t_dentry = root_fs.lookup(&index);
+    struct dentry **t_dentry = (struct dentry **)root_fs.lookup(&index);
     if (t_dentry)
     {
       root_fs_dentry = *t_dentry;
     }
     index = 1;
-    struct vfsmount **t_vfsmount = root_fs.lookup(&index);
+    struct vfsmount **t_vfsmount = (struct vfsmount **)root_fs.lookup(&index);
     if (t_vfsmount)
     {
       root_fs_vfsmnt = *t_vfsmount;
@@ -630,7 +661,8 @@ struct file_data
 //  will however serve to de-dup some events.  (Ie.. If a program does frequent open/write/close.)
 BPF_LRU(file_map, struct file_data, u32);
 
-BPF_LRU(file_write_cache, u64, struct file_data);
+// Older kernels do not support the struct fields so allow for fallback
+BPF_LRU(file_write_cache, u64, FALLBACK_FIELD_TYPE(struct file_data, u32));
 BPF_LRU(file_creat_cache, u64, u32);
 
 // Only need this hook for kernels without lru_hash
@@ -642,14 +674,22 @@ int on_security_file_free(struct pt_regs *ctx, struct file *file)
     }
     u64 file_cache_key = (u64)file;
 
-    struct file_data *cachep = file_write_cache.lookup(&file_cache_key);
+    void *cachep = file_write_cache.lookup(&file_cache_key);
     if (cachep)
     {
         struct data_t data = {};
         __set_key_entry_data(&data, NULL);
 
-        data.device = cachep->device;
-        data.inode  = cachep->inode;
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+            data.device = ((struct file_data *)cachep)->device;
+            data.inode  = ((struct file_data *)cachep)->inode;
+        #else
+            data.device = 0;
+            data.inode = 0;
+            __set_device_from_file(&data, file);
+            __set_inode_from_file(&data, file);
+        #endif
+
 
         data.state = PP_ENTRY_POINT;
         data.type = EVENT_FILE_CLOSE;
@@ -658,7 +698,7 @@ int on_security_file_free(struct pt_regs *ctx, struct file *file)
         __do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
         events.perf_submit(ctx, &data, sizeof(data));
     }
-    
+
     file_write_cache.delete(&file_cache_key);
     file_creat_cache.delete(&file_cache_key);
     return 0;
@@ -749,26 +789,40 @@ int trace_write_entry(struct pt_regs *ctx,
 
     u64 file_cache_key = (u64)file;
 
-    struct file_data *cachep = file_write_cache.lookup(&file_cache_key);
+    void *cachep = file_write_cache.lookup(&file_cache_key);
     if (cachep)
     {
-        // if we really care about that multiple tasks 
-        // these are likely threads or less likely inherited from a fork 
-        if (cachep->pid == data.pid)
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+            struct file_data cache_data = *((struct file_data *)cachep);
+            pid_t pid = cache_data.pid;
+            cache_data.pid = data.pid;
+        #else
+            u32 cache_data = *(u32*)cachep;
+            pid_t pid = cache_data;
+            cache_data = data.pid;
+        #endif
+
+        // if we really care about that multiple tasks
+        // these are likely threads or less likely inherited from a fork
+        if (pid == data.pid)
         {
             goto out;
         }
-        cachep->pid    = data.pid;
-        file_write_cache.update(&file_cache_key, cachep);
+
+        file_write_cache.update(&file_cache_key, &cache_data);
         goto out;
     }
     else
     {
-        struct file_data cache_data = {
-                .pid    = data.pid,
-                .device = data.device,
-                .inode  = data.inode
-        };
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+            struct file_data cache_data = {
+                    .pid    = data.pid,
+                    .device = data.device,
+                    .inode  = data.inode
+            };
+        #else
+            u32 cache_data = data.pid;
+        #endif
         file_write_cache.insert(&file_cache_key, &cache_data);
     }
 
@@ -968,9 +1022,9 @@ int on_wake_up_new_task(struct pt_regs *ctx, struct task_struct *task)
     struct dentry *root_fs_dentry = task->fs->root.dentry;
     struct vfsmount *root_fs_vfsmount = task->fs->root.mnt;
     index = 0;
-    root_fs.update(&index, &root_fs_dentry);
+    root_fs.update(&index, (void *)&root_fs_dentry);
     index += 1;
-    root_fs.update(&index, &root_fs_vfsmount);
+    root_fs.update(&index, (void *)&root_fs_vfsmount);
 #endif
 
     // Get this in case it's a non-standard process
@@ -1029,8 +1083,8 @@ struct ip_entry {
     u8 flow;
 };
 
-BPF_LRU(ip_cache, struct ip_key, struct ip_entry);
-BPF_LRU(ip6_cache, struct ip6_key, struct ip_entry);
+BPF_LRU(ip_cache, FALLBACK_FIELD_TYPE(struct ip_key, u32), FALLBACK_FIELD_TYPE(struct ip_entry, struct ip_key));
+BPF_LRU(ip6_cache, FALLBACK_FIELD_TYPE(struct ip6_key, u32), FALLBACK_FIELD_TYPE(struct ip_entry, struct ip6_key));
 
 static inline bool has_ip_cache(struct ip_key *ip_key, u8 flow)
 {
@@ -1038,10 +1092,10 @@ static inline bool has_ip_cache(struct ip_key *ip_key, u8 flow)
     struct ip_key *ip_entry = ip_cache.lookup(&ip_key->pid);
     if (ip_entry)
     {
-        if (ip_entry->dport == ip_key->remote_port &&
-            ip_entry->sport == ip_key->local_port &&
-            ip_entry->daddr == ip_key->remote_addr &&
-            ip_entry->saddr == ip_key->local_addr)
+        if (ip_entry->remote_port == ip_key->remote_port &&
+            ip_entry->local_port == ip_key->local_port &&
+            ip_entry->remote_addr == ip_key->remote_addr &&
+            ip_entry->local_addr == ip_key->local_addr)
         {
             return true;
         }
@@ -1083,16 +1137,16 @@ static inline bool has_ip6_cache(struct ip6_key *ip6_key, u8 flow)
     struct ip6_key *ip_entry = ip6_cache.lookup(&ip6_key->pid);
     if (ip_entry)
     {
-        if (ip_entry->dport == ip6_key->remote_port &&
-            ip_entry->sport == ip6_key->local_port &&
-            ip_entry->daddr6[0] == ip6_key->remote_addr6[0] &&
-            ip_entry->daddr6[1] == ip6_key->remote_addr6[1] &&
-            ip_entry->daddr6[2] == ip6_key->remote_addr6[2] &&
-            ip_entry->daddr6[3] == ip6_key->remote_addr6[3] &&
-            ip_entry->saddr6[0] == ip6_key->local_addr6[0] &&
-            ip_entry->saddr6[1] == ip6_key->local_addr6[1] &&
-            ip_entry->saddr6[2] == ip6_key->local_addr6[2] &&
-            ip_entry->saddr6[3] == ip6_key->local_addr6[3])
+        if (ip_entry->remote_port == ip6_key->remote_port &&
+            ip_entry->local_port == ip6_key->local_port &&
+            ip_entry->remote_addr6[0] == ip6_key->remote_addr6[0] &&
+            ip_entry->remote_addr6[1] == ip6_key->remote_addr6[1] &&
+            ip_entry->remote_addr6[2] == ip6_key->remote_addr6[2] &&
+            ip_entry->remote_addr6[3] == ip6_key->remote_addr6[3] &&
+            ip_entry->local_addr6[0] == ip6_key->local_addr6[0] &&
+            ip_entry->local_addr6[1] == ip6_key->local_addr6[1] &&
+            ip_entry->local_addr6[2] == ip6_key->local_addr6[2] &&
+            ip_entry->local_addr6[3] == ip6_key->local_addr6[3])
         {
             return true;
         }
@@ -1155,6 +1209,7 @@ int on_security_task_free(struct pt_regs *ctx, struct task_struct *task)
     last_parent.delete(&data.pid);
 #ifdef CACHE_UDP
     // Remove burst cache entries
+    //  We only need to do this for older kernels that do not have an LRU
     ip_cache.delete(&data.pid);
     ip6_cache.delete(&data.pid);
 #endif /* CACHE_UDP */
@@ -1288,7 +1343,7 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
 
     data.type         = EVENT_NET_CONNECT_ACCEPT;
     __set_key_entry_data(&data, NULL);
-    
+
     data.net.protocol = IPPROTO_UDP;
 
     udphdr = (struct udphdr *)(skb->head + skb->transport_header);
