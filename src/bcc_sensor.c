@@ -746,7 +746,7 @@ out:
 }
 
 
-int trace_write_entry(struct pt_regs *ctx,
+static inline int __trace_write_entry(struct pt_regs *ctx,
                       struct file *   file,
                       char __user *buf,
                       size_t       count)
@@ -836,83 +836,21 @@ out:
     return 0;
 }
 
+int trace_write_entry(struct pt_regs *ctx,
+                      struct file *   file,
+                      char __user *buf,
+                      size_t       count)
+{
+    return (__trace_write_entry(ctx, file, buf, count));
+}
+
 // This is mainly for kernel > 5.8.0
 int trace_write_kentry(struct pt_regs *ctx,
                       struct file *   file,
                       const void  *   buf,
                       size_t       count)
 {
-    struct data_t data = {};
-    struct super_block *sb = NULL;
-    struct inode *inode = NULL;
-    int mode;
-
-    if (!file)
-    {
-        goto out;
-    }
-
-    sb = _sb_from_file(file);
-    if (!sb)
-    {
-        goto out;
-    }
-
-    if (__is_special_filesystem(sb))
-    {
-        goto out;
-    }
-
-    bpf_probe_read(&inode, sizeof(inode), &(file->f_inode));
-    if (!inode)
-    {
-        goto out;
-    }
-    bpf_probe_read(&mode, sizeof(mode), &(inode->i_mode));
-    if (!S_ISREG(mode))
-    {
-        goto out;
-    }
-    __set_key_entry_data(&data, file);
-    __set_device_from_sb(&data, sb);
-
-    u64 file_cache_key = (u64)file;
-
-    void *cachep = file_write_cache.lookup(&file_cache_key);
-    if (cachep)
-    {
-            struct file_data cache_data = *((struct file_data *)cachep);
-            pid_t pid = cache_data.pid;
-            cache_data.pid = data.pid;
-
-        // if we really care about that multiple tasks
-        // these are likely threads or less likely inherited from a fork
-        if (pid == data.pid)
-        {
-            goto out;
-        }
-
-        file_write_cache.update(&file_cache_key, &cache_data);
-        goto out;
-    }
-    else
-    {
-            struct file_data cache_data = {
-                    .pid    = data.pid,
-                    .device = data.device,
-                    .inode  = data.inode
-            };
-        file_write_cache.insert(&file_cache_key, &cache_data);
-    }
-
-    data.state = PP_ENTRY_POINT;
-    data.type = EVENT_FILE_WRITE;
-    events.perf_submit(ctx, &data, sizeof(data));
-
-    __do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
-    events.perf_submit(ctx, &data, sizeof(data));
-out:
-    return 0;
+    return (__trace_write_entry(ctx, file, (char *)buf, count));
 }
 
 // This hook may not be very accurate but at least tells us the intent
