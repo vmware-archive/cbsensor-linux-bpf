@@ -515,6 +515,16 @@ def load_script(bcc_kernel_script):
 def load_perf_callback(bcc):
 	bcc['events'].open_perf_buffer(perf_event_cb, page_cnt=128)
 
+def check_symbol_exists(symbol):
+	with open("/proc/kallsyms") as syms:
+		ops = ''
+		for line in syms:
+			(addr, size, name) = line.rstrip().split(" ", 2)
+			name = name.split("\t")[0]
+			if name == symbol:
+				return True
+	return False
+
 def attach_probes(bcc):
 	probes = [
 		# PID Clone Events
@@ -539,6 +549,18 @@ def attach_probes(bcc):
 		Probe(
 			pp='__vfs_write',
 			pp_cb_name='trace_write_entry',
+		),
+		# Note, the 2 probe points below. They are replacements of
+		# __vfs_write for kernel version >= 5.8.0
+		# We need to attach either __vfs_write OR vfs_write, __kernel_write
+		# Insert any new probes after __kernel_write
+		Probe(
+			pp='vfs_write',
+			pp_cb_name='trace_write_entry',
+		),
+		Probe(
+			pp='__kernel_write',
+			pp_cb_name='trace_write_kentry',
 		),
 		Probe(
 			pp='security_mmap_file',
@@ -654,7 +676,18 @@ def attach_probes(bcc):
 		),
 	]
 
+	vfs_write_skip_flag = 0
 	for probe in probes:
+		if vfs_write_skip_flag > 0:
+			vfs_write_skip_flag -= 1
+			continue
+
+		if (probe.pp == "__vfs_write"):
+			if check_symbol_exists(symbol=probe.pp):
+				bcc.attach_kprobe(event=probe.pp, fn_name=probe.pp_cb_name)
+				vfs_write_skip_flag = 2
+			continue
+
 		if (probe.is_kretprobe):
 			bcc.attach_kretprobe(event=probe.pp, fn_name=probe.pp_cb_name)
 		else:

@@ -746,7 +746,7 @@ out:
 }
 
 
-int trace_write_entry(struct pt_regs *ctx,
+static inline int __trace_write_entry(struct pt_regs *ctx,
                       struct file *   file,
                       char __user *buf,
                       size_t       count)
@@ -834,6 +834,23 @@ int trace_write_entry(struct pt_regs *ctx,
     events.perf_submit(ctx, &data, sizeof(data));
 out:
     return 0;
+}
+
+int trace_write_entry(struct pt_regs *ctx,
+                      struct file *   file,
+                      char __user *buf,
+                      size_t       count)
+{
+    return (__trace_write_entry(ctx, file, buf, count));
+}
+
+// This is mainly for kernel > 5.8.0
+int trace_write_kentry(struct pt_regs *ctx,
+                      struct file *   file,
+                      const void  *   buf,
+                      size_t       count)
+{
+    return (__trace_write_entry(ctx, file, (char *)buf, count));
 }
 
 // This hook may not be very accurate but at least tells us the intent
