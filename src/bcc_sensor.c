@@ -537,10 +537,26 @@ out:
 
 static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry, struct data_t *data)
 {
-    struct dentry *cd = NULL;
-    struct dentry *pe = NULL;
+    struct dentry *current_dentry = NULL;
+    struct dentry *parent_dentry = NULL;
     struct qstr sp = {};
 
+    struct dentry *root_fs_dentry = NULL;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (task->fs)
+    {
+        root_fs_dentry = task->fs->root.dentry;
+    }
+#else
+    u32 index = 0;
+    struct dentry **t_dentry = (struct dentry **)root_fs.lookup(&index);
+    if (t_dentry)
+    {
+        root_fs_dentry = *t_dentry;
+    }
+#endif
     bpf_probe_read(&sp, sizeof(struct qstr), (void *)&(dentry->d_name));
     if (sp.name == NULL)
     {
@@ -548,25 +564,30 @@ static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry, s
     }
     bpf_probe_read(&data->fname, sizeof(data->fname), (void *)sp.name);
 
-    bpf_probe_read(&pe, sizeof(pe), &(dentry->d_parent));
-    bpf_probe_read(&cd, sizeof(cd), &(dentry));
+    bpf_probe_read(&parent_dentry, sizeof(parent_dentry), &(dentry->d_parent));
+    bpf_probe_read(&current_dentry, sizeof(current_dentry), &(dentry));
     data->state = PP_PATH_COMPONENT;
 
 #pragma unroll
     for (int i = 0; i < MAX_PATH_ITER; i++) {
-        if (pe == cd || pe == NULL)
+        if (dentry == root_fs_dentry)
+        {
+            goto out;
+        }
+
+        if (parent_dentry == current_dentry || parent_dentry == NULL)
         {
             break;
         }
-        bpf_probe_read(&sp, sizeof(struct qstr), (void *)&(cd->d_name));
+        bpf_probe_read(&sp, sizeof(struct qstr), (void *)&(current_dentry->d_name));
         if((void *)sp.name != NULL)
         {
             bpf_probe_read(data->fname, sizeof(data->fname), (void *)sp.name);
             events.perf_submit(ctx, data, sizeof(*data));
         }
 
-        bpf_probe_read(&cd, sizeof(cd), &(pe));
-        bpf_probe_read(&pe, sizeof(pe), &(pe->d_parent));
+        bpf_probe_read(&current_dentry, sizeof(current_dentry), &(parent_dentry));
+        bpf_probe_read(&parent_dentry, sizeof(parent_dentry), &(parent_dentry->d_parent));
     }
 
     data->fname[0] = '\0';
