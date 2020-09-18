@@ -543,8 +543,7 @@ static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry, s
 
     struct dentry *root_fs_dentry = NULL;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
-    // We can ifdef this block to make this act more like either
-    // d_absolute_path or __d_path
+
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     if (task->fs)
     {
@@ -555,7 +554,7 @@ static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry, s
     struct dentry **t_dentry = (struct dentry **)root_fs.lookup(&index);
     if (t_dentry)
     {
-      root_fs_dentry = *t_dentry;
+        root_fs_dentry = *t_dentry;
     }
 #endif
     bpf_probe_read(&sp, sizeof(struct qstr), (void *)&(dentry->d_name));
