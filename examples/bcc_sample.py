@@ -525,6 +525,16 @@ def check_symbol_exists(symbol):
 				return True
 	return False
 
+# List of deprecated functions and number of the replacement functions
+# while adding the Probe, its important to add the deprecated function
+# and their replacement function(s) in order.
+# See example of deprecated function __vfs_write below.
+# 2 Replacement functions (viz: vfs_write, __kernel_write)
+
+deprecated_func_list = ['__vfs_write', 2]
+
+
+# attaching the probes to functions
 def attach_probes(bcc):
 	probes = [
 		# PID Clone Events
@@ -676,17 +686,18 @@ def attach_probes(bcc):
 		),
 	]
 
-	vfs_write_skip_flag = 0
+	dep_func_skip_flag = 0
 	for probe in probes:
-		if vfs_write_skip_flag > 0:
-			vfs_write_skip_flag -= 1
+		if dep_func_skip_flag > 0:
+			dep_func_skip_flag -= 1
 			continue
 
-		if (probe.pp == "__vfs_write"):
+		if probe.pp in deprecated_func_list:
 			if check_symbol_exists(symbol=probe.pp):
-				bcc.attach_kprobe(event=probe.pp, fn_name=probe.pp_cb_name)
-				vfs_write_skip_flag = 2
-			continue
+				count_index = deprecated_func_list.index(probe.pp)
+				dep_func_skip_flag = deprecated_func_list[count_index + 1]
+			else:
+				continue
 
 		if (probe.is_kretprobe):
 			bcc.attach_kretprobe(event=probe.pp, fn_name=probe.pp_cb_name)
