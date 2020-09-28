@@ -608,7 +608,7 @@ def attach_probes(bcc):
 		# DNS TCP Network Events
 		Probe(
 			pp='tcp_sendmsg',
-			pp_cb_name='trace_udp_sendmsg',
+			pp_cb_name='trace_tcp_sendmsg',
 		),
 
 		#DNS UDP recvmsg Events
