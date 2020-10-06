@@ -87,6 +87,7 @@ class EventType(object):
 		FILE_WRITE : 'FILE_WRITE',
 		FILE_CREATE : 'FILE_CREATE',
 		FILE_MMAP : 'FILE_MMAP',
+		FILE_TEST : 'FILE_TEST',
 		CONNECT_PRE : 'NET_CONNECT',
 		CONNECT_ACCEPT : 'NET_ACCEPT',
 		DNS_RESPONSE : 'DNS_RESPONSE',
@@ -235,7 +236,7 @@ class CloneEvent(object):
 		pathstr = self.filepath
 		if not pathstr:
 			pathstr = self.comm
-		event_str = '%lu FORK pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%s [%x:%lu]%s' % (
+		event_str = '%lu FORK pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%d [%x:%lu]%s' % (
 			self.event_time,
 			self.pid,
 			self.ppid,
@@ -297,7 +298,7 @@ class ExecEvent(object):
 	def logstr(self):
 		args = self.arg_str
 
-		exec_event_str = '%lu EXEC pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%s [%x:%lu]%s ret:%d \'%s\'' % (
+		exec_event_str = '%lu EXEC pid:%d ppid:%d uid:%d start_time:%lu mnt_ns:%d [%x:%lu]%s ret:%d \'%s\'' % (
 			self.event_time,
 			self.pid,
 			self.ppid,
@@ -339,13 +340,9 @@ class NetEvent(object):
 		self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 
 		if event_msg.ev_type == EVENT_TYPE.CONNECT_ACCEPT:
-			if event_msg.union.net.proto == 17:
-				self.local_port = socket.ntohs(int(event_msg.union.net.local_port))
-				self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 			self.flow = "rx"
 		elif event_msg.ev_type == EVENT_TYPE.CONNECT_PRE:
 			self.flow = "tx"
-			self.remote_port = socket.ntohs(int(event_msg.union.net.remote_port))
 
 		# AF_INET
 		if event_msg.union.net.ipver == socket.AF_INET:
