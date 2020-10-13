@@ -1503,9 +1503,9 @@ int trace_udp_sendmsg_return(struct pt_regs *ctx, struct sock *sk,
 		skp->__sk_common.skc_dport; // already network order
 
 	if (check_family(skp, AF_INET)) {
-		data.net.__local_addr = data.net.remote_addr =
+		data.net.__local_addr = data.net.local_addr =
 			skp->__sk_common.skc_daddr;
-		data.net.__remote_addr = data.net.local_addr =
+		data.net.__remote_addr = data.net.remote_addr =
 			skp->__sk_common.skc_rcv_saddr;
 
 #ifdef CACHE_UDP
