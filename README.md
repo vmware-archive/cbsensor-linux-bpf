@@ -4,11 +4,26 @@
 ## Overview
 The cbsensor-linux-bpf project currently provides a [BCC](https://github.com/iovisor/bcc) compatibile BPF C source code for general process, file and network events.
 
-## Try it out
+## Try it out [Python]
 Run the example [script](examples/bcc_sample.py) on your favorite Linux distro with BCC. Just run with root-like privileges, or whatever privileges you need to load a BPF program.
 
 ```bash
 sudo ./examples/bcc_sample.py ./src/bcc_sensor.c
+```
+
+## Try it out [Golang]
+Run the example [code](examples/bcc_sample.go) with golang (version >= 1.13). This code is tested on Ubuntu 20.04 LTS version but should work on any other Linux distros.
+* The golang program takes optional argument viz. BPF program name. The default value is src/bcc_sensor.c
+* The code can be compiled using "go build" or directly run with "go run" command as should below.
+* Root-like privileges are needed to load the BPF program.
+
+```bash
+go build examples/bcc_sample.go
+sudo ./bcc_sample
+
+OR
+
+sudo -E go run examples/bcc_sample.go
 ```
 
 ### Prerequisites
