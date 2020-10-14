@@ -6,15 +6,15 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io/ioutil"
-	"bytes"
-	"bufio"
-	"encoding/binary"
 	"os"
 	"os/signal"
-	"strings"
 	"strconv"
+	"strings"
 
 	bpf "github.com/iovisor/gobpf/bcc"
 )
@@ -32,175 +32,175 @@ var cProgramCode string
 
 var deprecatedFuncMap = map[string]int{"__vfs_write": 2}
 
-type ProbeMeta struct {
-	PP              string
-	PPCbName        string
-	IsKretProbe     bool
+type probeMeta struct {
+	PP          string
+	PPCbName    string
+	IsKretProbe bool
 }
 
-var allProbes = []ProbeMeta {
+var allProbes = []probeMeta{
 	//# PID Clone Events
-	ProbeMeta {
-		PP         : "wake_up_new_task",
-		PPCbName   : "on_wake_up_new_task",
+	probeMeta{
+		PP:          "wake_up_new_task",
+		PPCbName:    "on_wake_up_new_task",
 		IsKretProbe: false,
 	},
 	//# cache eviction relate probe
-	ProbeMeta {
-		PP         : "security_file_free",
-		PPCbName   : "on_security_file_free",
+	probeMeta{
+		PP:          "security_file_free",
+		PPCbName:    "on_security_file_free",
 		IsKretProbe: false,
 	},
 
 	//# Process Exit Events
-	ProbeMeta {
-		PP         : "security_task_free",
-		PPCbName   : "on_security_task_free",
+	probeMeta{
+		PP:          "security_task_free",
+		PPCbName:    "on_security_task_free",
 		IsKretProbe: false,
 	},
 
 	//# File Events
-	ProbeMeta {
-		PP         : "__vfs_write",
-		PPCbName   : "trace_write_entry",
+	probeMeta{
+		PP:          "__vfs_write",
+		PPCbName:    "trace_write_entry",
 		IsKretProbe: false,
 	},
 	//# Note, the 2 probe points below. They are replacements of
 	//# __vfs_write for kernel version >= 5.8.0
 	//# We need to attach either __vfs_write OR vfs_write, __kernel_write
 	//# Insert any new probes after __kernel_write
-	ProbeMeta {
-		PP         : "vfs_write",
-		PPCbName   : "trace_write_entry",
+	probeMeta{
+		PP:          "vfs_write",
+		PPCbName:    "trace_write_entry",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "__kernel_write",
-		PPCbName   : "trace_write_kentry",
+	probeMeta{
+		PP:          "__kernel_write",
+		PPCbName:    "trace_write_kentry",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "security_mmap_file",
-		PPCbName   : "on_security_mmap_file",
+	probeMeta{
+		PP:          "security_mmap_file",
+		PPCbName:    "on_security_mmap_file",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "security_file_open",
-		PPCbName   : "on_security_file_open",
+	probeMeta{
+		PP:          "security_file_open",
+		PPCbName:    "on_security_file_open",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "security_inode_unlink",
-		PPCbName   : "on_security_inode_unlink",
+	probeMeta{
+		PP:          "security_inode_unlink",
+		PPCbName:    "on_security_inode_unlink",
 		IsKretProbe: false,
 	},
 
 	//# execve and execveat syscalls
-	ProbeMeta {
-		PP         : bpf.GetSyscallFnName("execve"),
-		PPCbName   : "syscall__on_sys_execve",
+	probeMeta{
+		PP:          bpf.GetSyscallFnName("execve"),
+		PPCbName:    "syscall__on_sys_execve",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : bpf.GetSyscallFnName("execveat"),
-		PPCbName   : "syscall__on_sys_execveat",
+	probeMeta{
+		PP:          bpf.GetSyscallFnName("execveat"),
+		PPCbName:    "syscall__on_sys_execveat",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : bpf.GetSyscallFnName("execve"),
-		PPCbName   : "syscall__on_sys_execve",
+	probeMeta{
+		PP:          bpf.GetSyscallFnName("execve"),
+		PPCbName:    "syscall__on_sys_execve",
 		IsKretProbe: true,
 	},
-	ProbeMeta {
-		PP         : bpf.GetSyscallFnName("execveat"),
-		PPCbName   : "syscall__on_sys_execveat",
+	probeMeta{
+		PP:          bpf.GetSyscallFnName("execveat"),
+		PPCbName:    "syscall__on_sys_execveat",
 		IsKretProbe: true,
 	},
 
 	//# DNS TCP Network Events
-	ProbeMeta {
-		PP         : "tcp_sendmsg",
-		PPCbName   : "trace_tcp_sendmsg",
+	probeMeta{
+		PP:          "tcp_sendmsg",
+		PPCbName:    "trace_tcp_sendmsg",
 		IsKretProbe: false,
 	},
 
 	//# DNS UDP recvmsg Events
-	ProbeMeta {
-		PP         : "udp_recvmsg",
-		PPCbName   : "trace_udp_recvmsg",
+	probeMeta{
+		PP:          "udp_recvmsg",
+		PPCbName:    "trace_udp_recvmsg",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "udpv6_recvmsg",
-		PPCbName   : "trace_udp_recvmsg",
+	probeMeta{
+		PP:          "udpv6_recvmsg",
+		PPCbName:    "trace_udp_recvmsg",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "udp_recvmsg",
-		PPCbName   : "trace_udp_recvmsg_return",
+	probeMeta{
+		PP:          "udp_recvmsg",
+		PPCbName:    "trace_udp_recvmsg_return",
 		IsKretProbe: true,
 	},
-	ProbeMeta {
-		PP         : "udpv6_recvmsg",
-		PPCbName   : "trace_udp_recvmsg_return",
+	probeMeta{
+		PP:          "udpv6_recvmsg",
+		PPCbName:    "trace_udp_recvmsg_return",
 		IsKretProbe: true,
 	},
 
 	//# UDP Tx Events
-	ProbeMeta {
-		PP         : "udp_sendmsg",
-		PPCbName   : "trace_udp_sendmsg",
+	probeMeta{
+		PP:          "udp_sendmsg",
+		PPCbName:    "trace_udp_sendmsg",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "udpv6_sendmsg",
-		PPCbName   : "trace_udp_sendmsg",
+	probeMeta{
+		PP:          "udpv6_sendmsg",
+		PPCbName:    "trace_udp_sendmsg",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "udp_sendmsg",
-		PPCbName   : "trace_udp_sendmsg_return",
+	probeMeta{
+		PP:          "udp_sendmsg",
+		PPCbName:    "trace_udp_sendmsg_return",
 		IsKretProbe: true,
 	},
-	ProbeMeta {
-		PP         : "udpv6_sendmsg",
-		PPCbName   : "trace_udp_sendmsg_return",
+	probeMeta{
+		PP:          "udpv6_sendmsg",
+		PPCbName:    "trace_udp_sendmsg_return",
 		IsKretProbe: true,
 	},
 
 	//# UDP Rx Events
-	ProbeMeta {
-		PP         : "__skb_recv_udp",
-		PPCbName   : "trace_skb_recv_udp",
+	probeMeta{
+		PP:          "__skb_recv_udp",
+		PPCbName:    "trace_skb_recv_udp",
 		IsKretProbe: true,
 	},
 
 	//# TCP Connect Events
-	ProbeMeta {
-		PP         : "tcp_v4_connect",
-		PPCbName   : "trace_connect_v4_entry",
+	probeMeta{
+		PP:          "tcp_v4_connect",
+		PPCbName:    "trace_connect_v4_entry",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "tcp_v6_connect",
-		PPCbName   : "trace_connect_v6_entry",
+	probeMeta{
+		PP:          "tcp_v6_connect",
+		PPCbName:    "trace_connect_v6_entry",
 		IsKretProbe: false,
 	},
-	ProbeMeta {
-		PP         : "tcp_v4_connect",
-		PPCbName   : "trace_connect_v4_return",
+	probeMeta{
+		PP:          "tcp_v4_connect",
+		PPCbName:    "trace_connect_v4_return",
 		IsKretProbe: true,
 	},
-	ProbeMeta {
-		PP         : "tcp_v6_connect",
-		PPCbName   : "trace_connect_v6_return",
+	probeMeta{
+		PP:          "tcp_v6_connect",
+		PPCbName:    "trace_connect_v6_return",
 		IsKretProbe: true,
 	},
 
 	//# TCP Accept Events
-	ProbeMeta {
-		PP         : "inet_csk_accept",
-		PPCbName   : "trace_accept_return",
+	probeMeta{
+		PP:          "inet_csk_accept",
+		PPCbName:    "trace_accept_return",
 		IsKretProbe: true,
 	},
 }
@@ -208,45 +208,45 @@ var allProbes = []ProbeMeta {
 // LocalAddr  is in union with LocalAddr6
 // RemoteAddr is in union with RemoteAddr6
 type netEventData struct {
-	LocalAddr       uint32
-	RemoteAddr      uint32
-	RemotePort      uint16
-	LocalPort       uint16
-	IPVer           uint16
-	Proto           uint16
-	DNSFlag         uint16
-	Pad             uint16
-	LocalAddr6      [4]uint32
-	RemoteAddr6     [4]uint32
-	DNS             [40]byte
-	NameLen         uint32
+	LocalAddr   uint32
+	RemoteAddr  uint32
+	RemotePort  uint16
+	LocalPort   uint16
+	IPVer       uint16
+	Proto       uint16
+	DNSFlag     uint16
+	Pad         uint16
+	LocalAddr6  [4]uint32
+	RemoteAddr6 [4]uint32
+	DNS         [40]byte
+	NameLen     uint32
 }
 
 type mmapArgs struct {
-	flags       uint64
-	prot        uint64
+	flags uint64
+	prot  uint64
 }
 
 // Global structure read from the kernel event
 // use Capital letter to start attributes
 // Add Padded bytes to care of alignment (struct data_t)
 type sensorEvent struct {
-	EventTime   uint64
-	Tid         uint32
-	Pid         uint32
-	EvType      uint8
-	State       uint8
-	Pad1        uint16
-	Uid         uint32
-	Ppid        uint32
-	Inode       uint64
-	Device      uint32
-	MntNS       uint32
-	Pad2        [4]byte
-	UFNAME      [255]byte
-	Pad3        byte
-	RetVal      int32
-	StartTime   uint64
+	EventTime uint64
+	Tid       uint32
+	Pid       uint32
+	EvType    uint8
+	State     uint8
+	Pad1      uint16
+	UID       uint32
+	Ppid      uint32
+	Inode     uint64
+	Device    uint32
+	MntNS     uint32
+	Pad2      [4]byte
+	Ufname    [255]byte
+	Pad3      byte
+	RetVal    int32
+	StartTime uint64
 }
 
 /////////////////////
@@ -281,8 +281,8 @@ func main() {
 	eventTable := bpf.NewTable(bpfMod.TableId("events"), bpfMod)
 
 	cloneEventTable = make(map[string]*cloneEvent)
-	execEventTable  = make(map[uint32]*execEvent)
-	fileEventTable  = make(map[string]*fileEvent)
+	execEventTable = make(map[uint32]*execEvent)
+	fileEventTable = make(map[string]*fileEvent)
 
 	eventChannel := make(chan []byte)
 
@@ -341,7 +341,7 @@ func attachProbes(bpfMod *bpf.Module) int32 {
 
 	for i := 0; i < len(allProbes); i++ {
 		if depFuncSkipFlag > 0 {
-			depFuncSkipFlag -= 1
+			depFuncSkipFlag--
 			continue
 		}
 		if count, found := deprecatedFuncMap[allProbes[i].PP]; found {
@@ -388,34 +388,34 @@ func checkSymbolExists(symbol string) bool {
 // Enum, Constants etc
 //////////////////////
 
-type EventType uint8
 const (
-	PROCESS_ARG = 0
-	PROCESS_EXEC = 1
-	PROCESS_EXIT = 2
-	PROCESS_CLONE = 3
-	FILE_READ = 4
-	FILE_WRITE = 5
-	FILE_CREATE = 6
-	FILE_PATH = 7
-	FILE_MMAP = 8
-	FILE_TEST = 9
-	CONNECT_PRE = 10
-	CONNECT_ACCEPT = 11
-	DNS_RESPONSE = 12
-	WEB_PROXY = 13
-	FILE_DELETE = 14
-	FILE_CLOSE = 15
+	evProcessArg    = 0
+	evProcessExec   = 1
+	evProcessExit   = 2
+	evProcessClone  = 3
+	evFileRead      = 4
+	evFileWrite     = 5
+	evFileCreate    = 6
+	evFilePath      = 7
+	evFileMmap      = 8
+	evFileTest      = 9
+	evConnectPre    = 10
+	evConnectAccept = 11
+	evDNSResponse   = 12
+	evWebProxy      = 13
+	evFileDelete    = 14
+	evFileClose     = 15
 )
 
 type stateType uint8
+
 const (
-	PP_NO_EXTRA_DATA = 0
-	PP_ENTRY_POINT = 1
-	PP_PATH_COMPONENT = 2
-	PP_FINALIZED = 3
-	PP_APPEND = 4
-	PP_DEBUG = 5
+	stPpNoExtraData   = 0
+	stPpEntryPoint    = 1
+	stPpPathComponent = 2
+	stPpFinalized     = 3
+	stPpAppend        = 4
+	stPpDebug         = 5
 )
 
 func printEventByType(eventType uint8) string {
@@ -450,22 +450,22 @@ func parsePrintEvent(kevent sensorEvent) {
 	var result string
 
 	switch kevent.EvType {
-	case PROCESS_CLONE:
+	case evProcessClone:
 		result = handleCloneEvent(kevent)
 
-	case PROCESS_EXIT:
+	case evProcessExit:
 		result = handleExitEvent(kevent)
 
-	case PROCESS_EXEC, PROCESS_ARG:
+	case evProcessExec, evProcessArg:
 		result = handleExecEvent(kevent)
 
-	case CONNECT_PRE, CONNECT_ACCEPT:
+	case evConnectPre, evConnectAccept:
 		result = handleNetworkEvent(kevent)
 
-	case DNS_RESPONSE, WEB_PROXY:
+	case evDNSResponse, evWebProxy:
 		result = handleDNSEvent(kevent)
 
-	case FILE_WRITE, FILE_MMAP, FILE_CREATE, FILE_DELETE, FILE_CLOSE:
+	case evFileWrite, evFileMmap, evFileCreate, evFileDelete, evFileClose:
 		result = handleFileEvent(kevent)
 	}
 	if len(result) > 0 {
@@ -478,18 +478,18 @@ func parsePrintEvent(kevent sensorEvent) {
 ///////////////
 
 type cloneEvent struct {
-	filePath          string
+	filePath string
 
-	eventTime         uint64
-	tid               uint32
-	pid               uint32
-	uid               uint32
-	startTime         uint64
-	ppid              uint32
-	inode             uint64
-	device            uint32
-	mntNS             uint32
-	comm              string
+	eventTime uint64
+	tid       uint32
+	pid       uint32
+	uid       uint32
+	startTime uint64
+	ppid      uint32
+	inode     uint64
+	device    uint32
+	mntNS     uint32
+	comm      string
 }
 
 // Table for key, value pairs
@@ -501,7 +501,7 @@ func (clone *cloneEvent) initFunc(eventMsg sensorEvent) {
 	clone.eventTime = eventMsg.EventTime
 	clone.tid = eventMsg.Tid
 	clone.pid = eventMsg.Pid
-	clone.uid = eventMsg.Uid
+	clone.uid = eventMsg.UID
 	clone.startTime = eventMsg.StartTime
 	clone.ppid = eventMsg.Ppid
 	clone.inode = eventMsg.Inode
@@ -530,19 +530,19 @@ func (clone cloneEvent) logstrFunc() string {
 
 func handleCloneEvent(kevent sensorEvent) string {
 	key := fmt.Sprintf("%d-%d", kevent.EventTime, kevent.Pid)
-	if kevent.State == PP_NO_EXTRA_DATA {
+	if kevent.State == stPpNoExtraData {
 		forkStr := fmt.Sprintf("%d FORK pid:%d ppid:%d uid:%d start_time:%d %s",
 			kevent.EventTime,
 			kevent.Pid,
 			kevent.Ppid,
-			kevent.Uid,
+			kevent.UID,
 			kevent.StartTime,
 			eventMsgfNameDecode(kevent))
 		if _, found := cloneEventTable[key]; found {
 			delete(cloneEventTable, key)
 		}
 		return forkStr
-	} else if kevent.State == PP_ENTRY_POINT {
+	} else if kevent.State == stPpEntryPoint {
 		if _, found := cloneEventTable[key]; found {
 			fmt.Fprintf(os.Stderr, "Key shouldn't exist\n")
 			delete(cloneEventTable, key)
@@ -558,10 +558,10 @@ func handleCloneEvent(kevent sensorEvent) string {
 		return ""
 	}
 
-	if kevent.State == PP_PATH_COMPONENT {
+	if kevent.State == stPpPathComponent {
 		clone, _ := cloneEventTable[key]
 		clone.filePath = fmt.Sprintf("/%s%s", eventMsgfNameDecode(kevent), clone.filePath)
-	} else if kevent.State == PP_FINALIZED {
+	} else if kevent.State == stPpFinalized {
 		clone, _ := cloneEventTable[key]
 		delete(cloneEventTable, key)
 		return clone.logstrFunc()
@@ -586,16 +586,16 @@ type execEvent struct {
 	scriptPath        string
 	filePath          string
 
-	eventTime         uint64
-	tid               uint32
-	pid               uint32
-	argStr            string
-	startTime         uint64
-	ppid              uint32
-	uid               uint32
-	inode             uint64
-	device            uint32
-	mntNS             uint32
+	eventTime uint64
+	tid       uint32
+	pid       uint32
+	argStr    string
+	startTime uint64
+	ppid      uint32
+	uid       uint32
+	inode     uint64
+	device    uint32
+	mntNS     uint32
 }
 
 // Table for key, value pairs
@@ -621,27 +621,27 @@ func (exec *execEvent) initFunc(eventMsg sensorEvent) {
 }
 
 func (exec *execEvent) updateFunc(eventMsg sensorEvent) string {
-	if eventMsg.EvType == PROCESS_ARG {
-		if eventMsg.State == PP_FINALIZED {
+	if eventMsg.EvType == evProcessArg {
+		if eventMsg.State == stPpFinalized {
 			exec.retVal = eventMsg.RetVal
 			return exec.logstrFunc()
-		} else if eventMsg.State == PP_ENTRY_POINT {
+		} else if eventMsg.State == stPpEntryPoint {
 			exec.argStr += " " + eventMsgfNameDecode(eventMsg)
-		} else if eventMsg.State == PP_APPEND {
+		} else if eventMsg.State == stPpAppend {
 			exec.argStr += eventMsgfNameDecode(eventMsg)
 		}
 	}
-	if eventMsg.EvType == PROCESS_EXEC {
-		if eventMsg.State == PP_ENTRY_POINT {
+	if eventMsg.EvType == evProcessExec {
+		if eventMsg.State == stPpEntryPoint {
 			exec.startTime = eventMsg.StartTime
 			exec.ppid = eventMsg.Ppid
-			exec.uid = eventMsg.Uid
+			exec.uid = eventMsg.UID
 			exec.inode = eventMsg.Inode
 			exec.device = eventMsg.Device
 			exec.mntNS = eventMsg.MntNS
-		} else if eventMsg.State == PP_PATH_COMPONENT {
+		} else if eventMsg.State == stPpPathComponent {
 			exec.filePath = fmt.Sprintf("/%s%s", eventMsgfNameDecode(eventMsg), exec.filePath)
-		} else if (eventMsg.State == PP_FINALIZED) {
+		} else if eventMsg.State == stPpFinalized {
 			exec.finalizeFilePath = true
 		}
 	}
@@ -651,17 +651,17 @@ func (exec *execEvent) updateFunc(eventMsg sensorEvent) string {
 func (exec execEvent) logstrFunc() string {
 	//args = exec.argStr
 	execEventStr := fmt.Sprintf("%d EXEC pid:%d ppid:%d uid:%d start_time:%d mnt_ns:%d [%x:%d]%s ret:%d \"%s\"",
-			exec.eventTime,
-			exec.pid,
-			exec.ppid,
-			exec.uid,
-			exec.startTime,
-			exec.mntNS,
-			exec.device,
-			exec.inode,
-			exec.filePath,
-			exec.retVal,
-			exec.argStr)
+		exec.eventTime,
+		exec.pid,
+		exec.ppid,
+		exec.uid,
+		exec.startTime,
+		exec.mntNS,
+		exec.device,
+		exec.inode,
+		exec.filePath,
+		exec.retVal,
+		exec.argStr)
 	return execEventStr
 }
 
@@ -686,21 +686,21 @@ func handleExecEvent(kevent sensorEvent) string {
 ///////////////
 
 type netEvent struct {
-	eventTime         uint64
-	tid               uint32
-	pid               uint32
-	ppid              uint32
-	startTime         uint64
-	mntNS             uint32
-	uid               uint32
-	eventTypeStr      string
-	flow              string
-	family            string
-	packLocalAddr     string
-	packRemoteAddr    string
-	proto             string
-	localPort         uint16
-	remotePort        uint16
+	eventTime      uint64
+	tid            uint32
+	pid            uint32
+	ppid           uint32
+	startTime      uint64
+	mntNS          uint32
+	uid            uint32
+	eventTypeStr   string
+	flow           string
+	family         string
+	packLocalAddr  string
+	packRemoteAddr string
+	proto          string
+	localPort      uint16
+	remotePort     uint16
 }
 
 func (net *netEvent) initFunc(eventMsg sensorEvent) {
@@ -712,7 +712,7 @@ func (net *netEvent) initFunc(eventMsg sensorEvent) {
 	net.startTime = eventMsg.StartTime
 	net.mntNS = eventMsg.MntNS
 	//# Not in 4.4 suse kernels
-	net.uid = eventMsg.Uid
+	net.uid = eventMsg.UID
 
 	net.eventTypeStr = printEventByType(eventMsg.EvType)
 
@@ -723,7 +723,7 @@ func (net *netEvent) initFunc(eventMsg sensorEvent) {
 	net.proto = "TCP"
 
 	var netEvent netEventData
-	err := binary.Read(bytes.NewBuffer(eventMsg.UFNAME[:]), binary.LittleEndian, &netEvent)
+	err := binary.Read(bytes.NewBuffer(eventMsg.Ufname[:]), binary.LittleEndian, &netEvent)
 	if err != nil {
 		fmt.Printf("netEvent decode failed error : %s\n", err)
 		return
@@ -733,12 +733,12 @@ func (net *netEvent) initFunc(eventMsg sensorEvent) {
 		net.proto = "UDP"
 	}
 
-	net.localPort  = ntohs(netEvent.LocalPort)
+	net.localPort = ntohs(netEvent.LocalPort)
 	net.remotePort = ntohs(netEvent.RemotePort)
 
-	if eventMsg.EvType == CONNECT_ACCEPT {
+	if eventMsg.EvType == evConnectAccept {
 		net.flow = "rx"
-	} else if eventMsg.EvType == CONNECT_PRE {
+	} else if eventMsg.EvType == evConnectPre {
 		net.flow = "tx"
 	}
 
@@ -753,7 +753,7 @@ func (net *netEvent) initFunc(eventMsg sensorEvent) {
 		binary.LittleEndian.PutUint32(bytesRemote, netEvent.RemoteAddr)
 		net.packRemoteAddr = fmt.Sprintf("%d.%d.%d.%d",
 			bytesRemote[0], bytesRemote[1], bytesRemote[2], bytesRemote[3])
-	//# AF_INET6 : IPVer = 10
+		//# AF_INET6 : IPVer = 10
 	} else if netEvent.IPVer == 10 {
 		net.family = "IPv6"
 		for i := 0; i < 4; i++ {
@@ -779,14 +779,14 @@ func ntohs(src uint16) uint16 {
 
 func (net netEvent) logstrFunc() string {
 	netEventStr := fmt.Sprintf("%d %s %s  pid:%d %s:%d -> %s:%d",
-			net.eventTime,
-			net.eventTypeStr,
-			net.proto,
-			net.pid,
-			net.packLocalAddr,
-			net.localPort,
-			net.packRemoteAddr,
-			net.remotePort)
+		net.eventTime,
+		net.eventTypeStr,
+		net.proto,
+		net.pid,
+		net.packLocalAddr,
+		net.localPort,
+		net.packRemoteAddr,
+		net.remotePort)
 	return netEventStr
 }
 
@@ -805,19 +805,19 @@ func handleDNSEvent(kevent sensorEvent) string {
 ///////////////
 
 type fileEvent struct {
-	filePath          string
-	mounts            map[uint32]string
+	filePath string
+	mounts   map[uint32]string
 
-	evType            uint8
-	eventTime         uint64
-	tid               uint32
-	pid               uint32
-	ppid              uint32
-	uid               uint32
-	inode             uint64
-	device            uint32
-	mntNS             uint32
-	eventTypeStr      string
+	evType       uint8
+	eventTime    uint64
+	tid          uint32
+	pid          uint32
+	ppid         uint32
+	uid          uint32
+	inode        uint64
+	device       uint32
+	mntNS        uint32
+	eventTypeStr string
 }
 
 // Table for key, value pairs
@@ -832,7 +832,7 @@ func (file *fileEvent) initFunc(eventMsg sensorEvent) {
 	file.tid = eventMsg.Tid
 	file.pid = eventMsg.Pid
 	file.ppid = eventMsg.Ppid
-	file.uid = eventMsg.Uid
+	file.uid = eventMsg.UID
 	file.inode = eventMsg.Inode
 	file.device = eventMsg.Device
 	file.mntNS = eventMsg.MntNS
@@ -859,7 +859,7 @@ func getMounts(mounts map[uint32]string) {
 }
 
 func (file *fileEvent) updateFunc(eventMsg sensorEvent) string {
-	if eventMsg.State == PP_PATH_COMPONENT {
+	if eventMsg.State == stPpPathComponent {
 		name := eventMsgfNameDecode(eventMsg)
 		if len(name) == 0 {
 			if len(file.mounts) == 0 {
@@ -870,7 +870,7 @@ func (file *fileEvent) updateFunc(eventMsg sensorEvent) string {
 			}
 		}
 		file.filePath = fmt.Sprintf("/%s%s", name, file.filePath)
-	} else if (eventMsg.State == PP_FINALIZED) {
+	} else if eventMsg.State == stPpFinalized {
 		return file.logstrFunc()
 	}
 	return ""
@@ -878,15 +878,15 @@ func (file *fileEvent) updateFunc(eventMsg sensorEvent) string {
 
 func (file fileEvent) logstrFunc() string {
 	fileEventStr := fmt.Sprintf("%d %s pid:%d ppid:%d uid:%d mnt_ns:%d [%x:%d]%s",
-			file.eventTime,
-			file.eventTypeStr,
-			file.pid,
-			file.ppid,
-			file.uid,
-			file.mntNS,
-			file.device,
-			file.inode,
-			file.filePath)
+		file.eventTime,
+		file.eventTypeStr,
+		file.pid,
+		file.ppid,
+		file.uid,
+		file.mntNS,
+		file.device,
+		file.inode,
+		file.filePath)
 	return fileEventStr
 }
 
@@ -904,7 +904,7 @@ func handleFileEvent(kevent sensorEvent) string {
 			return result
 		}
 	} else {
-		if kevent.State > PP_ENTRY_POINT {
+		if kevent.State > stPpEntryPoint {
 			fmt.Fprintf(os.Stderr, "Missing event data\n")
 		}
 		var file fileEvent
@@ -918,11 +918,11 @@ func eventMsgfNameDecode(eventMsg sensorEvent) string {
 	var fName [255]byte
 	i := 0
 
-	for j := 0; j < len(eventMsg.UFNAME); j++ {
-		if eventMsg.UFNAME[j] == 0 {
+	for j := 0; j < len(eventMsg.Ufname); j++ {
+		if eventMsg.Ufname[j] == 0 {
 			break
 		}
-		fName[i] = eventMsg.UFNAME[j]
+		fName[i] = eventMsg.Ufname[j]
 		i++
 	}
 	fName[i] = 0
