@@ -108,12 +108,12 @@ var allProbes = []probeMeta{
 	},
 	probeMeta{
 		PP:          bpf.GetSyscallFnName("execve"),
-		PPCbName:    "syscall__on_sys_execve",
+		PPCbName:    "after_sys_execve",
 		IsKretProbe: true,
 	},
 	probeMeta{
 		PP:          bpf.GetSyscallFnName("execveat"),
-		PPCbName:    "syscall__on_sys_execveat",
+		PPCbName:    "after_sys_execve",
 		IsKretProbe: true,
 	},
 
@@ -255,6 +255,8 @@ type sensorEvent struct {
 
 func main() {
 
+	const perfMapPageCnt = 1024
+
 	fileName := string("src/bcc_sensor.c")
 	if len(os.Args) > 2 {
 		fmt.Println("Usage:", os.Args[0], " <C source code file> e.g. src/bcc_sensor.c")
@@ -286,7 +288,7 @@ func main() {
 
 	eventChannel := make(chan []byte)
 
-	sensorMap, err := bpf.InitPerfMap(eventTable, eventChannel, nil)
+	sensorMap, err := bpf.InitPerfMapWithPageCnt(eventTable, eventChannel, nil, perfMapPageCnt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Perf map Initialization failed: %s\n", err)
 		return
@@ -919,7 +921,8 @@ func eventMsgfNameDecode(eventMsg sensorEvent) string {
 	i := 0
 
 	for j := 0; j < len(eventMsg.Ufname); j++ {
-		if eventMsg.Ufname[j] == 0 {
+		// max index for i = 254
+		if eventMsg.Ufname[j] == 0 || i == 254 {
 			break
 		}
 		fName[i] = eventMsg.Ufname[j]
