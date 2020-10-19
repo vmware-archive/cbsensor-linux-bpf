@@ -407,6 +407,7 @@ const (
 	evWebProxy      = 13
 	evFileDelete    = 14
 	evFileClose     = 15
+	evFileOpen	= 16
 )
 
 type stateType uint8
@@ -437,7 +438,8 @@ func printEventByType(eventType uint8) string {
 		"DNS_RESPONSE",
 		"WEB_PROXY",
 		"FILE_DELETE",
-		"FILE_CLOSE"}
+		"FILE_CLOSE",
+		"FILE_OPEN"}
 	if len(eventNames) >= int(eventType) {
 		return eventNames[eventType]
 	}
@@ -467,7 +469,7 @@ func parsePrintEvent(kevent sensorEvent) {
 	case evDNSResponse, evWebProxy:
 		result = handleDNSEvent(kevent)
 
-	case evFileWrite, evFileMmap, evFileCreate, evFileDelete, evFileClose:
+	case evFileWrite, evFileMmap, evFileCreate, evFileDelete, evFileClose, evFileOpen:
 		result = handleFileEvent(kevent)
 	}
 	if len(result) > 0 {

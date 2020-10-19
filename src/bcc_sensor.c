@@ -98,6 +98,7 @@ enum event_type {
 	EVENT_NET_CONNECT_WEB_PROXY,
 	EVENT_FILE_DELETE,
 	EVENT_FILE_CLOSE,
+	EVENT_FILE_OPEN
 };
 
 #define DNS_RESP_PORT_NUM 53
@@ -824,7 +825,14 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
 	if (!file) {
 		goto out;
 	}
-	if (!(file->f_flags & (O_CREAT | O_TRUNC))) {
+
+	if ((file->f_flags & (O_CREAT | O_TRUNC))) {
+		data.type = EVENT_FILE_CREATE;
+	}
+	else if (!(file->f_flags & (O_RDWR | O_WRONLY))) {
+		data.type = EVENT_FILE_OPEN;
+	}
+	else {
 		goto out;
 	}
 
@@ -855,27 +863,30 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
 
 	struct file_data key = { .device = data.device, .inode = data.inode };
 
-	// If this is already tracked skip the event.  Otherwise add it to the tracking table.
+	// If this is a create event and is already tracked, skip the event.
+	// Otherwise add it to the tracking table.
+	// Skip this behavior if this is an open event.
 	u32 *file_exists = file_map.lookup(&key);
-	if (file_exists) {
-		goto out;
-	} else {
-		file_map.update(&key, &data.pid);
-	}
-
-	cachep = file_creat_cache.lookup(&file_cache_key);
-	if (cachep) {
-		if (*cachep == data.pid) {
+	if (data.type == EVENT_FILE_CREATE) {
+		if(file_exists) {
 			goto out;
 		}
-		file_creat_cache.update(&file_cache_key, &data.pid);
-		goto out;
-	} else {
-		file_creat_cache.insert(&file_cache_key, &data.pid);
+
+		file_map.update(&key, &data.pid);
+		cachep = file_creat_cache.lookup(&file_cache_key);
+		if(cachep) {
+			if(*cachep == data.pid) {
+				goto out;
+			}
+			file_creat_cache.update(&file_cache_key, &data.pid);
+			goto out;
+		}
+		else {
+			file_creat_cache.insert(&file_cache_key, &data.pid);
+		}
 	}
 
 	data.state = PP_ENTRY_POINT;
-	data.type = EVENT_FILE_CREATE;
 	events.perf_submit(ctx, &data, sizeof(data));
 
 	__do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
