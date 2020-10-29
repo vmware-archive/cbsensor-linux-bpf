@@ -29,10 +29,13 @@
 #include <net/inet_sock.h>
 
 // Create BPF_LRU if it does not exist.
-//  This follows the form for other BPF_XXXX macros, so should work if it is ever added
+// Support for lru hashes begins with 4.10, so a regular hash table must be used on earlier
+// kernels (https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#tables-aka-maps)
+// This follows the form for other BPF_XXXX macros, so should work if it is ever added
 #ifndef BPF_LRU
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
-#define BPF_LRU1(_name) BPF_TABLE("lru_hash", u64, u64, _name, 10240)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+#define BPF_LRU1(_name) \
+    BPF_TABLE("lru_hash", u64, u64, _name, 10240)
 #define BPF_LRU2(_name, _key_type) \
 	BPF_TABLE("lru_hash", _key_type, u64, _name, 10240)
 #define BPF_LRU3(_name, _key_type, _leaf_type) \
