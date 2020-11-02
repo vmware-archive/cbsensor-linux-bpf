@@ -60,7 +60,12 @@
 // Note that these functions are not 100% compatible.  The read_str function returns the number of bytes read,
 //   while the old version returns 0 on success.  Some of the logic we use does depend on the non-zero result
 //   (described later).
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+#define bpf_probe_read_kernel_str bpf_probe_read
 #define bpf_probe_read_str bpf_probe_read
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0)
+#define bpf_probe_read_kernel_str bpf_probe_read_str
+#endif
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
@@ -351,11 +356,11 @@ static inline void __set_key_entry_data(struct data_t *data, struct file *file)
 
 static u8 __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
 {
-	// Note: On some kernels bpf_probe_read_str does not exist.  In this case it is
+	// Note: On some kernels bpf_probe_read_kernel_str does not exist.  In this case it is
 	//  substituted by bpf_probe_read.  The return value for these two cases mean something
 	//  different, but that is OK for our logic.
 	// Note: On older kernel this may read past the actual arg list into the env.
-	u8 result = bpf_probe_read_str(data->fname, MAX_FNAME, ptr);
+	u8 result = bpf_probe_read_kernel_str(data->fname, MAX_FNAME, ptr);
 	events.perf_submit(ctx, data, sizeof(struct data_t));
 	return result;
 }
@@ -1517,9 +1522,9 @@ int trace_udp_sendmsg_return(struct pt_regs *ctx, struct sock *sk,
 		skp->__sk_common.skc_dport; // already network order
 
 	if (check_family(skp, AF_INET)) {
-		data.net.__local_addr = data.net.local_addr =
-			skp->__sk_common.skc_daddr;
 		data.net.__remote_addr = data.net.remote_addr =
+			skp->__sk_common.skc_daddr;
+		data.net.__local_addr = data.net.local_addr =
 			skp->__sk_common.skc_rcv_saddr;
 
 #ifdef CACHE_UDP
