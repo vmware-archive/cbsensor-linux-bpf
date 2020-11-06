@@ -2,6 +2,22 @@
  * Copyright 2019-2020 VMware, Inc.
  * SPDX-License-Identifier: GPL-2.0
  */
+
+// Struct randomization causes issues on 4.13 and some versions of 4.14
+// These are redefined to work around this, per:
+// https://lists.iovisor.org/g/iovisor-dev/topic/21386300#1239
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
+#ifdef randomized_struct_fields_start
+#undef randomized_struct_fields_start
+#endif
+#define randomized_struct_fields_start  struct {
+
+#ifdef randomized_struct_fields_end
+#undef randomized_struct_fields_end
+#endif
+#define randomized_struct_fields_end    };
+#endif
+
 #include <uapi/linux/limits.h>
 #include <uapi/linux/in.h>
 #include <uapi/linux/ip.h>
