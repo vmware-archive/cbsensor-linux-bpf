@@ -6,7 +6,7 @@
 // Struct randomization causes issues on 4.13 and some versions of 4.14
 // These are redefined to work around this, per:
 // https://lists.iovisor.org/g/iovisor-dev/topic/21386300#1239
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
 #ifdef randomized_struct_fields_start
 #undef randomized_struct_fields_start
 #endif
