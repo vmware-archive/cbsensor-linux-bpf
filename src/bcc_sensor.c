@@ -18,6 +18,10 @@
 #define randomized_struct_fields_end    };
 #endif
 
+#ifndef KBUILD_MODNAME
+#define KBUILD_MODNAME "vmw_bcc_bpfsensor"
+#endif
+
 #include <uapi/linux/limits.h>
 #include <uapi/linux/in.h>
 #include <uapi/linux/ip.h>
