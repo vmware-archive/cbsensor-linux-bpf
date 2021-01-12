@@ -350,17 +350,20 @@ static inline void __set_key_entry_data(struct data_t *data, struct file *file)
 	u64 id;
 
 	data->event_time = bpf_ktime_get_ns();
-	id = bpf_get_current_pid_tgid();
-	data->tid = id & 0xffffffff;
-	data->pid = id >> 32;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	data->tid = task->pid;
+	data->pid = task->tgid;
 	data->start_time = task->start_time;
 	data->uid = __kuid_val(task->cred->uid);
 	data->ppid = task->real_parent->tgid;
 	data->mnt_ns = __get_mnt_ns_id(task);
 #else
+	id = bpf_get_current_pid_tgid();
+	data->tid = id & 0xffffffff;
+	data->pid = id >> 32;
+
 	u64 *last_start = last_start_time.lookup(&data->pid);
 	if (last_start) {
 		data->start_time = *last_start;
@@ -608,7 +611,6 @@ int syscall__on_sys_execveat(struct pt_regs *ctx, int fd,
 
 	submit_all_args(ctx, argv, &data);
 
-out:
 	return 0;
 }
 int syscall__on_sys_execve(struct pt_regs *ctx, const char __user *filename,
@@ -623,7 +625,6 @@ int syscall__on_sys_execve(struct pt_regs *ctx, const char __user *filename,
 
 	submit_all_args(ctx, argv, &data);
 
-out:
 	return 0;
 }
 
@@ -635,24 +636,7 @@ int after_sys_execve(struct pt_regs *ctx)
 	u64 *start_time = NULL;
 	u32 *ppid = NULL;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
-	data.pid = bpf_get_current_pid_tgid() >> 32;
-	start_time = last_start_time.lookup(&data.pid);
-	if (start_time) {
-		data.start_time = *start_time;
-	}
-
-	ppid = last_parent.lookup(&data.pid);
-	if (ppid) {
-		data.ppid = *ppid;
-	}
-#else
-	task = (struct task_struct *)bpf_get_current_task();
-	data.uid = __kuid_val(task->cred->uid);
-	data.start_time = task->start_time;
-	data.ppid = task->real_parent->tgid;
-#endif
-	data.tid = bpf_get_current_pid_tgid() & 0xffffffff;
+	__set_key_entry_data(&data, NULL);
 	data.event_time = bpf_ktime_get_ns();
 	data.state = PP_FINALIZED;
 	data.type = EVENT_PROCESS_ARG;
