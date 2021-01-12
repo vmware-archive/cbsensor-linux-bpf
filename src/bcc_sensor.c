@@ -631,10 +631,7 @@ int syscall__on_sys_execve(struct pt_regs *ctx, const char __user *filename,
 //Note that this can be called more than one from the same pid
 int after_sys_execve(struct pt_regs *ctx)
 {
-	struct task_struct *task;
 	struct data_t data = {};
-	u64 *start_time = NULL;
-	u32 *ppid = NULL;
 
 	__set_key_entry_data(&data, NULL);
 	data.event_time = bpf_ktime_get_ns();
