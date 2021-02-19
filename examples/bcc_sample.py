@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2020 VMware, Inc.
+# Copyright 2020-2021 VMware, Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 #
 
@@ -585,6 +585,10 @@ def attach_probes(bcc):
 		Probe(
 			pp='security_inode_unlink',
 			pp_cb_name='on_security_inode_unlink',
+		),
+		Probe(
+			pp='security_inode_rename',
+			pp_cb_name='on_security_inode_rename',
 		),
 
 		# execve and execveat syscalls

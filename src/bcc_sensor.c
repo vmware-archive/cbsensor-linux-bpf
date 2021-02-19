@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2020 VMware, Inc.
+ * Copyright 2019-2021 VMware, Inc.
  * SPDX-License-Identifier: GPL-2.0
  */
 
@@ -947,6 +947,57 @@ int on_security_inode_unlink(struct pt_regs *ctx, struct inode *dir,
 
 	__do_dentry_path(ctx, dentry, &data);
 
+	events.perf_submit(ctx, &data, sizeof(data));
+
+out:
+	return 0;
+}
+
+int on_security_inode_rename(struct pt_regs *ctx,
+			     struct inode *old_dir, struct dentry *old_dentry,
+			     struct inode *new_dir, struct dentry *new_dentry,
+			     unsigned int flags)
+{
+	struct data_t data = {};
+	struct super_block *sb = NULL;
+	struct inode *inode = NULL;
+
+	sb = _sb_from_dentry(old_dentry);
+	if (!sb) {
+		goto out;
+	}
+
+	if (__is_special_filesystem(sb)) {
+		goto out;
+	}
+
+	__set_key_entry_data(&data, NULL);
+
+	data.state = PP_ENTRY_POINT;
+	data.type = EVENT_FILE_DELETE;
+	bpf_probe_read(&inode, sizeof(inode), &(old_dentry->d_inode));
+	if (inode) {
+		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
+	}
+
+	struct file_data key = { .device = data.device, .inode = data.inode };
+	file_map.delete(&key);
+
+	__set_device_from_sb(&data, sb);
+	events.perf_submit(ctx, &data, sizeof(data));
+	__do_dentry_path(ctx, old_dentry, &data);
+	events.perf_submit(ctx, &data, sizeof(data));
+
+	inode = NULL;
+	data.state = PP_ENTRY_POINT;
+	data.type = EVENT_FILE_CREATE;
+	bpf_probe_read(&inode, sizeof(inode), &(new_dentry->d_inode));
+	if (inode) {
+		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
+	}
+	__set_device_from_sb(&data, sb);
+	events.perf_submit(ctx, &data, sizeof(data));
+	__do_dentry_path(ctx, new_dentry, &data);
 	events.perf_submit(ctx, &data, sizeof(data));
 
 out:
