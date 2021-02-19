@@ -1,5 +1,5 @@
 //
-// Copyright 2020 VMware, Inc.
+// Copyright 2020-20201 VMware, Inc.
 // SPDX-License-Identifier: BSD-2-Clause
 //
 
@@ -92,6 +92,11 @@ var allProbes = []probeMeta{
 	probeMeta{
 		PP:          "security_inode_unlink",
 		PPCbName:    "on_security_inode_unlink",
+		IsKretProbe: false,
+	},
+	probeMeta{
+		PP:          "security_inode_rename",
+		PPCbName:    "on_security_inode_rename",
 		IsKretProbe: false,
 	},
 
