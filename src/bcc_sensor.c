@@ -1390,6 +1390,8 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
 			return 0;
 		}
 #endif /* CACHE_UDP */
+	} else {
+	    return 0;
 	}
 
 	events.perf_submit(ctx, &data, sizeof(data));
