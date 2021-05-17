@@ -956,18 +956,16 @@ int on_security_inode_rename(struct pt_regs *ctx,
 			     unsigned int flags)
 {
 	struct data_t data = {};
-	struct super_block *sb = NULL;
+	struct super_block *old_sb = NULL;
+	struct super_block *new_sb = NULL;
 	struct inode *inode = NULL;
 
-	sb = _sb_from_dentry(old_dentry);
-	if (!sb) {
+	old_sb = _sb_from_dentry(old_dentry);
+	if (!old_sb || __is_special_filesystem(old_sb)) {
 		goto out;
 	}
 
-	if (__is_special_filesystem(sb)) {
-		goto out;
-	}
-
+    // Send the delete event for the path where the file is being moved from
 	__set_key_entry_data(&data, NULL);
 
 	data.state = PP_ENTRY_POINT;
@@ -977,22 +975,51 @@ int on_security_inode_rename(struct pt_regs *ctx,
 		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
 	}
 
-	struct file_data key = { .device = data.device, .inode = data.inode };
-	file_map.delete(&key);
+	struct file_data old_key = { .device = data.device, .inode = data.inode };
+	file_map.delete(&old_key);
 
-	__set_device_from_sb(&data, sb);
+	__set_device_from_sb(&data, old_sb);
 	events.perf_submit(ctx, &data, sizeof(data));
 	__do_dentry_path(ctx, old_dentry, &data);
 	events.perf_submit(ctx, &data, sizeof(data));
 
+    // If the target destination already exists,
+    // send a delete event for the file that will be overwritten
+    if (new_dentry && new_dentry->d_inode != NULL)
+    {
+        new_sb = _sb_from_dentry(new_dentry);
+        if (new_sb &&  !__is_special_filesystem(new_sb))
+        {
+            __set_key_entry_data(&data, NULL);
+
+            data.state = PP_ENTRY_POINT;
+            data.type = EVENT_FILE_DELETE;
+            bpf_probe_read(&inode, sizeof(inode), &(new_dentry->d_inode));
+            if (inode) {
+                bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
+            }
+
+            struct file_data new_key = { .device = data.device, .inode = data.inode };
+            file_map.delete(&new_key);
+
+            __set_device_from_sb(&data, new_sb);
+            events.perf_submit(ctx, &data, sizeof(data));
+            __do_dentry_path(ctx, new_dentry, &data);
+            events.perf_submit(ctx, &data, sizeof(data));
+        }
+    }
+
+    // Send the create event for the path where the file is being moved to
+    // (the path will be the one reported in the new dentry, but the inode
+    // will persist and be the one from the old dentry)
 	inode = NULL;
 	data.state = PP_ENTRY_POINT;
 	data.type = EVENT_FILE_CREATE;
-	bpf_probe_read(&inode, sizeof(inode), &(new_dentry->d_inode));
+	bpf_probe_read(&inode, sizeof(inode), &(old_dentry->d_inode));
 	if (inode) {
 		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
 	}
-	__set_device_from_sb(&data, sb);
+	__set_device_from_sb(&data, new_sb);
 	events.perf_submit(ctx, &data, sizeof(data));
 	__do_dentry_path(ctx, new_dentry, &data);
 	events.perf_submit(ctx, &data, sizeof(data));
