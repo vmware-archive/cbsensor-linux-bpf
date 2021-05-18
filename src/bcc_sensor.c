@@ -1019,7 +1019,8 @@ int on_security_inode_rename(struct pt_regs *ctx,
 	if (inode) {
 		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
 	}
-	__set_device_from_sb(&data, new_sb);
+    
+    __set_device_from_sb(&data, new_sb ? new_sb : old_sb);
 	events.perf_submit(ctx, &data, sizeof(data));
 	__do_dentry_path(ctx, new_dentry, &data);
 	events.perf_submit(ctx, &data, sizeof(data));
