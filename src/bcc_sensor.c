@@ -169,7 +169,7 @@ struct mmap_args {
 #define MAX_FNAME 255L
 
 struct data_t {
-	u64 event_time;
+	u64 event_time; // Time the event collection started.  (Same across message parts.)
 	u32 tid;
 	u32 pid;
 	u8 type;
@@ -186,6 +186,7 @@ struct data_t {
 	};
 	int retval;
 	u64 start_time;
+    u64 event_submit_time; // Time we submit the event to bpf.  (Unique for each event.)
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
@@ -195,6 +196,12 @@ BPF_HASH(root_fs, u32, void *, 3); // stores last known root fs
 #endif
 
 BPF_PERF_OUTPUT(events);
+
+static void send_event(struct pt_regs *ctx, struct data_t *data)
+{
+    data->event_submit_time = bpf_ktime_get_ns();
+    events.perf_submit(ctx, data, sizeof(struct data_t));
+}
 
 static inline struct super_block *_sb_from_dentry(struct dentry *dentry)
 {
@@ -381,14 +388,14 @@ static u8 __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
 	//  different, but that is OK for our logic.
 	// Note: On older kernel this may read past the actual arg list into the env.
 	u8 result = bpf_probe_read_str(data->fname, MAX_FNAME, ptr);
-	events.perf_submit(ctx, data, sizeof(struct data_t));
+    send_event(ctx, data);
 	return result;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
 #define MAXARG 30
 #else
-#define MAXARG 25
+#define MAXARG 20
 #endif
 
 // PSCLNX-6764 - Improve EXEC event performance
@@ -523,7 +530,7 @@ static inline int __do_file_path(struct pt_regs *ctx, struct dentry *dentry,
 			bpf_probe_read(&data->fname, sizeof(data->fname),
 				       sp.name);
 			dentry = parent_dentry;
-			events.perf_submit(ctx, data, sizeof(*data));
+			send_event(ctx, data);
 		}
 	}
 
@@ -578,7 +585,7 @@ static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry,
 		if ((void *)sp.name != NULL) {
 			bpf_probe_read(data->fname, sizeof(data->fname),
 				       (void *)sp.name);
-			events.perf_submit(ctx, data, sizeof(*data));
+			send_event(ctx, data);
 		}
 
 		bpf_probe_read(&current_dentry, sizeof(current_dentry),
@@ -588,7 +595,7 @@ static inline int __do_dentry_path(struct pt_regs *ctx, struct dentry *dentry,
 	}
 
 	data->fname[0] = '\0';
-	events.perf_submit(ctx, data, sizeof(*data));
+	send_event(ctx, data);
 
 out:
 	data->state = PP_FINALIZED;
@@ -636,7 +643,7 @@ int after_sys_execve(struct pt_regs *ctx)
 	data.type = EVENT_PROCESS_ARG;
 	data.retval = PT_REGS_RC(ctx);
 
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 	return 0;
 }
@@ -681,11 +688,11 @@ int on_security_file_free(struct pt_regs *ctx, struct file *file)
 
 		data.state = PP_ENTRY_POINT;
 		data.type = EVENT_FILE_CLOSE;
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 
 		__do_file_path(ctx, file->f_path.dentry, file->f_path.mnt,
 			       &data);
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 	}
 
 	file_write_cache.delete(&file_cache_key);
@@ -720,11 +727,11 @@ int on_security_mmap_file(struct pt_regs *ctx, struct file *file,
 	data.mmap_args.flags = flags;
 	data.mmap_args.prot = prot;
 	// submit initial event data
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 	// submit file path event data
 	__do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 out:
 	return 0;
 }
@@ -798,10 +805,10 @@ static inline int __trace_write_entry(struct pt_regs *ctx, struct file *file,
 
 	data.state = PP_ENTRY_POINT;
 	data.type = EVENT_FILE_WRITE;
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 	__do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 out:
 	return 0;
 }
@@ -893,11 +900,11 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
 	}
 
 	data.state = PP_ENTRY_POINT;
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 	__do_file_path(ctx, file->f_path.dentry, file->f_path.mnt, &data);
 
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 out:
 	return 0;
@@ -940,11 +947,11 @@ int on_security_inode_unlink(struct pt_regs *ctx, struct inode *dir,
 
 	data.state = PP_ENTRY_POINT;
 	data.type = EVENT_FILE_DELETE;
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 	__do_dentry_path(ctx, dentry, &data);
 
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 out:
 	return 0;
@@ -979,9 +986,9 @@ int on_security_inode_rename(struct pt_regs *ctx,
 	file_map.delete(&old_key);
 
 	__set_device_from_sb(&data, old_sb);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 	__do_dentry_path(ctx, old_dentry, &data);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
     // If the target destination already exists,
     // send a delete event for the file that will be overwritten
@@ -1003,9 +1010,9 @@ int on_security_inode_rename(struct pt_regs *ctx,
             file_map.delete(&new_key);
 
             __set_device_from_sb(&data, new_sb);
-            events.perf_submit(ctx, &data, sizeof(data));
+            send_event(ctx, &data);
             __do_dentry_path(ctx, new_dentry, &data);
-            events.perf_submit(ctx, &data, sizeof(data));
+            send_event(ctx, &data);
         }
     }
 
@@ -1019,11 +1026,10 @@ int on_security_inode_rename(struct pt_regs *ctx,
 	if (inode) {
 		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
 	}
-    
     __set_device_from_sb(&data, new_sb ? new_sb : old_sb);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 	__do_dentry_path(ctx, new_dentry, &data);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 out:
 	return 0;
@@ -1076,18 +1082,18 @@ int on_wake_up_new_task(struct pt_regs *ctx, struct task_struct *task)
 	// Get this in case it's a non-standard process
 	bpf_get_current_comm(&data.fname, TASK_COMM_LEN);
 	if ((task->flags & PF_KTHREAD) || !task->mm) {
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 		goto out;
 	}
 
 	exe_file = task->mm->exe_file;
 	if (!exe_file) {
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 		goto out;
 	}
 	bpf_probe_read(&pinode, sizeof(pinode), &(exe_file->f_inode));
 	if (!pinode) {
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 		goto out;
 	}
 	bpf_probe_read(&data.inode, sizeof(data.inode), &pinode->i_ino);
@@ -1095,10 +1101,10 @@ int on_wake_up_new_task(struct pt_regs *ctx, struct task_struct *task)
 
 	data.state = PP_ENTRY_POINT;
 
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 	__do_file_path(ctx, exe_file->f_path.dentry, exe_file->f_path.mnt,
 		       &data);
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 out:
 	return 0;
@@ -1225,7 +1231,7 @@ int on_security_task_free(struct pt_regs *ctx, struct task_struct *task)
 	if (task->real_parent) {
 		data.ppid = task->real_parent->tgid;
 	}
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
 	last_start_time.delete(&data.pid);
 	last_parent.delete(&data.pid);
@@ -1299,7 +1305,7 @@ static int trace_connect_return(struct pt_regs *ctx)
 		data.net.__remote_addr = data.net.remote_addr =
 			skp->__sk_common.skc_daddr;
 
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 	} else if (check_family(skp, AF_INET6)) {
 		data.net.ipver = AF_INET6;
 		bpf_probe_read(
@@ -1309,7 +1315,7 @@ static int trace_connect_return(struct pt_regs *ctx)
 			       sizeof(data.net.remote_addr6),
 			       skp->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
 
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 	}
 
 	currsock.delete(&id);
@@ -1422,7 +1428,7 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
 	    return 0;
 	}
 
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 	return 0;
 }
@@ -1458,7 +1464,7 @@ int trace_accept_return(struct pt_regs *ctx)
 
 		if (data.net.local_addr != 0 && data.net.remote_addr != 0 &&
 		    data.net.local_port != 0 && data.net.remote_port != 0) {
-			events.perf_submit(ctx, &data, sizeof(data));
+			send_event(ctx, &data);
 		}
 	} else if (check_family(newsk, AF_INET6)) {
 		bpf_probe_read(
@@ -1468,7 +1474,7 @@ int trace_accept_return(struct pt_regs *ctx)
 			       sizeof(data.net.remote_addr6),
 			       newsk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
 
-		events.perf_submit(ctx, &data, sizeof(data));
+		send_event(ctx, &data);
 	}
 	return 0;
 }
@@ -1545,7 +1551,7 @@ int trace_udp_recvmsg_return(struct pt_regs *ctx, struct sock *sk,
 					data.net.dns_flag |=
 						DNS_SEGMENT_FLAGS_END;
 
-				events.perf_submit(ctx, &data, sizeof(data));
+				send_event(ctx, &data);
 				len = len - DNS_SEGMENT_LEN;
 				dns = dns + DNS_SEGMENT_LEN;
 			} else {
@@ -1653,7 +1659,7 @@ int trace_udp_sendmsg_return(struct pt_regs *ctx, struct sock *sk,
 		}
 #endif /* CACHE_UDP */
 	}
-	events.perf_submit(ctx, &data, sizeof(data));
+	send_event(ctx, &data);
 
 out:
 	currsock3.delete(&id);
@@ -1741,7 +1747,7 @@ CATCH:
 			if (len <= 40)
 				data.net.dns_flag |= DNS_SEGMENT_FLAGS_END;
 
-			events.perf_submit(ctx, &data, sizeof(data));
+			send_event(ctx, &data);
 			len = len - DNS_SEGMENT_LEN;
 			p = p + DNS_SEGMENT_LEN;
 		} else {
