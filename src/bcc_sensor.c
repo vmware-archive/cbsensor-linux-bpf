@@ -1757,3 +1757,66 @@ CATCH:
 
 	return 0;
 }
+
+struct sched_process_exit_args {
+    __u64 pad;
+    char comm[16];
+    pid_t pid;
+    int prio;
+};
+
+int on_sched_process_exit(struct sched_process_exit_args *arg)
+{
+    struct data_t data = {};
+    struct task_struct *task;
+    unsigned int flags = 0;
+    pid_t tgid = 0;
+    pid_t pid = 0;
+    task = (struct task_struct *)bpf_get_current_task();
+
+    if (!task) {
+      goto out;
+    }
+
+    if (arg->pid == task->pid)
+    {
+        pid = task->pid;
+        tgid = task->tgid;
+    }
+    else
+    {
+        pid = arg->pid;
+        tgid = arg->pid;
+    }
+
+    if (tgid != pid) {
+      goto out;
+    }
+
+    bpf_probe_read(&flags, sizeof(flags), &task->flags);
+    if (flags & PF_KTHREAD)
+      goto out;
+
+    data.event_time = bpf_ktime_get_ns();
+    data.type = EVENT_PROCESS_EXIT;
+    data.tid = pid;
+    data.pid = tgid;
+    data.start_time = task->start_time;
+    if (task->real_parent) {
+        data.ppid = task->real_parent->tgid;
+    }
+    send_event((struct pt_regs*)arg, &data);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
+    last_start_time.delete(&data.pid);
+    last_parent.delete(&data.pid);
+#ifdef CACHE_UDP
+    // Remove burst cache entries
+    //  We only need to do this for older kernels that do not have an LRU
+    ip_cache.delete(&data.pid);
+    ip6_cache.delete(&data.pid);
+#endif /* CACHE_UDP */
+#endif
+out:
+    return 0;
+}
+
