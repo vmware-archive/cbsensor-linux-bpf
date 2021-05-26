@@ -1768,12 +1768,18 @@ struct sched_process_exit_args {
 int on_sched_process_exit(struct sched_process_exit_args *arg)
 {
     struct data_t data = {};
-    struct task_struct *task;
+    struct task_struct *task = NULL;
     unsigned int flags = 0;
     pid_t tgid = 0;
     pid_t pid = 0;
-    task = (struct task_struct *)bpf_get_current_task();
 
+    // only used in older versions
+    pid = arg->pid;
+    tgid = arg->pid;
+
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+    // only works on newer kernels
+    task = (struct task_struct *)bpf_get_current_task();
     if (!task) {
       goto out;
     }
@@ -1783,26 +1789,23 @@ int on_sched_process_exit(struct sched_process_exit_args *arg)
         pid = task->pid;
         tgid = task->tgid;
     }
-    else
-    {
-        pid = arg->pid;
-        tgid = arg->pid;
-    }
-
-    if (tgid != pid) {
-      goto out;
-    }
 
     bpf_probe_read(&flags, sizeof(flags), &task->flags);
     if (flags & PF_KTHREAD)
       goto out;
+
+    #endif
+
+    if (tgid != pid) {
+      goto out;
+    }
 
     data.event_time = bpf_ktime_get_ns();
     data.type = EVENT_PROCESS_EXIT;
     data.tid = pid;
     data.pid = tgid;
     data.start_time = task->start_time;
-    if (task->real_parent) {
+    if (task && task->real_parent) {
         data.ppid = task->real_parent->tgid;
     }
     send_event((struct pt_regs*)arg, &data);
