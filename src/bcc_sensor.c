@@ -10,12 +10,13 @@
 #ifdef randomized_struct_fields_start
 #undef randomized_struct_fields_start
 #endif
-#define randomized_struct_fields_start  struct {
-
+#define randomized_struct_fields_start struct {
 #ifdef randomized_struct_fields_end
 #undef randomized_struct_fields_end
 #endif
-#define randomized_struct_fields_end    };
+#define randomized_struct_fields_end \
+	}                            \
+	;
 #endif
 
 #ifndef KBUILD_MODNAME
@@ -54,8 +55,7 @@
 // This follows the form for other BPF_XXXX macros, so should work if it is ever added
 #ifndef BPF_LRU
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
-#define BPF_LRU1(_name) \
-    BPF_TABLE("lru_hash", u64, u64, _name, 10240)
+#define BPF_LRU1(_name) BPF_TABLE("lru_hash", u64, u64, _name, 10240)
 #define BPF_LRU2(_name, _key_type) \
 	BPF_TABLE("lru_hash", _key_type, u64, _name, 10240)
 #define BPF_LRU3(_name, _key_type, _leaf_type) \
@@ -186,7 +186,7 @@ struct data_t {
 	};
 	int retval;
 	u64 start_time;
-    u64 event_submit_time; // Time we submit the event to bpf.  (Unique for each event.)
+	u64 event_submit_time; // Time we submit the event to bpf.  (Unique for each event.)
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
@@ -199,8 +199,8 @@ BPF_PERF_OUTPUT(events);
 
 static void send_event(struct pt_regs *ctx, struct data_t *data)
 {
-    data->event_submit_time = bpf_ktime_get_ns();
-    events.perf_submit(ctx, data, sizeof(struct data_t));
+	data->event_submit_time = bpf_ktime_get_ns();
+	events.perf_submit(ctx, data, sizeof(struct data_t));
 }
 
 static inline struct super_block *_sb_from_dentry(struct dentry *dentry)
@@ -388,7 +388,7 @@ static u8 __submit_arg(struct pt_regs *ctx, void *ptr, struct data_t *data)
 	//  different, but that is OK for our logic.
 	// Note: On older kernel this may read past the actual arg list into the env.
 	u8 result = bpf_probe_read_str(data->fname, MAX_FNAME, ptr);
-    send_event(ctx, data);
+	send_event(ctx, data);
 	return result;
 }
 
@@ -841,11 +841,9 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
 
 	if ((file->f_flags & (O_CREAT | O_TRUNC))) {
 		data.type = EVENT_FILE_CREATE;
-	}
-	else if (!(file->f_flags & (O_RDWR | O_WRONLY))) {
+	} else if (!(file->f_flags & (O_RDWR | O_WRONLY))) {
 		data.type = EVENT_FILE_OPEN;
-	}
-	else {
+	} else {
 		goto out;
 	}
 
@@ -881,20 +879,19 @@ int on_security_file_open(struct pt_regs *ctx, struct file *file)
 	// Skip this behavior if this is an open event.
 	u32 *file_exists = file_map.lookup(&key);
 	if (data.type == EVENT_FILE_CREATE) {
-		if(file_exists) {
+		if (file_exists) {
 			goto out;
 		}
 
 		file_map.update(&key, &data.pid);
 		cachep = file_creat_cache.lookup(&file_cache_key);
-		if(cachep) {
-			if(*cachep == data.pid) {
+		if (cachep) {
+			if (*cachep == data.pid) {
 				goto out;
 			}
 			file_creat_cache.update(&file_cache_key, &data.pid);
 			goto out;
-		}
-		else {
+		} else {
 			file_creat_cache.insert(&file_cache_key, &data.pid);
 		}
 	}
@@ -957,10 +954,9 @@ out:
 	return 0;
 }
 
-int on_security_inode_rename(struct pt_regs *ctx,
-			     struct inode *old_dir, struct dentry *old_dentry,
-			     struct inode *new_dir, struct dentry *new_dentry,
-			     unsigned int flags)
+int on_security_inode_rename(struct pt_regs *ctx, struct inode *old_dir,
+			     struct dentry *old_dentry, struct inode *new_dir,
+			     struct dentry *new_dentry, unsigned int flags)
 {
 	struct data_t data = {};
 	struct super_block *old_sb = NULL;
@@ -972,7 +968,7 @@ int on_security_inode_rename(struct pt_regs *ctx,
 		goto out;
 	}
 
-    // Send the delete event for the path where the file is being moved from
+	// Send the delete event for the path where the file is being moved from
 	__set_key_entry_data(&data, NULL);
 
 	data.state = PP_ENTRY_POINT;
@@ -982,7 +978,8 @@ int on_security_inode_rename(struct pt_regs *ctx,
 		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
 	}
 
-	struct file_data old_key = { .device = data.device, .inode = data.inode };
+	struct file_data old_key = { .device = data.device,
+				     .inode = data.inode };
 	file_map.delete(&old_key);
 
 	__set_device_from_sb(&data, old_sb);
@@ -990,35 +987,36 @@ int on_security_inode_rename(struct pt_regs *ctx,
 	__do_dentry_path(ctx, old_dentry, &data);
 	send_event(ctx, &data);
 
-    // If the target destination already exists,
-    // send a delete event for the file that will be overwritten
-    if (new_dentry && new_dentry->d_inode != NULL)
-    {
-        new_sb = _sb_from_dentry(new_dentry);
-        if (new_sb &&  !__is_special_filesystem(new_sb))
-        {
-            __set_key_entry_data(&data, NULL);
+	// If the target destination already exists,
+	// send a delete event for the file that will be overwritten
+	if (new_dentry && new_dentry->d_inode != NULL) {
+		new_sb = _sb_from_dentry(new_dentry);
+		if (new_sb && !__is_special_filesystem(new_sb)) {
+			__set_key_entry_data(&data, NULL);
 
-            data.state = PP_ENTRY_POINT;
-            data.type = EVENT_FILE_DELETE;
-            bpf_probe_read(&inode, sizeof(inode), &(new_dentry->d_inode));
-            if (inode) {
-                bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
-            }
+			data.state = PP_ENTRY_POINT;
+			data.type = EVENT_FILE_DELETE;
+			bpf_probe_read(&inode, sizeof(inode),
+				       &(new_dentry->d_inode));
+			if (inode) {
+				bpf_probe_read(&data.inode, sizeof(data.inode),
+					       &inode->i_ino);
+			}
 
-            struct file_data new_key = { .device = data.device, .inode = data.inode };
-            file_map.delete(&new_key);
+			struct file_data new_key = { .device = data.device,
+						     .inode = data.inode };
+			file_map.delete(&new_key);
 
-            __set_device_from_sb(&data, new_sb);
-            send_event(ctx, &data);
-            __do_dentry_path(ctx, new_dentry, &data);
-            send_event(ctx, &data);
-        }
-    }
+			__set_device_from_sb(&data, new_sb);
+			send_event(ctx, &data);
+			__do_dentry_path(ctx, new_dentry, &data);
+			send_event(ctx, &data);
+		}
+	}
 
-    // Send the create event for the path where the file is being moved to
-    // (the path will be the one reported in the new dentry, but the inode
-    // will persist and be the one from the old dentry)
+	// Send the create event for the path where the file is being moved to
+	// (the path will be the one reported in the new dentry, but the inode
+	// will persist and be the one from the old dentry)
 	inode = NULL;
 	data.state = PP_ENTRY_POINT;
 	data.type = EVENT_FILE_CREATE;
@@ -1026,7 +1024,7 @@ int on_security_inode_rename(struct pt_regs *ctx,
 	if (inode) {
 		bpf_probe_read(&data.inode, sizeof(data.inode), &inode->i_ino);
 	}
-    __set_device_from_sb(&data, new_sb ? new_sb : old_sb);
+	__set_device_from_sb(&data, new_sb ? new_sb : old_sb);
 	send_event(ctx, &data);
 	__do_dentry_path(ctx, new_dentry, &data);
 	send_event(ctx, &data);
@@ -1425,7 +1423,7 @@ int trace_skb_recv_udp(struct pt_regs *ctx)
 		}
 #endif /* CACHE_UDP */
 	} else {
-	    return 0;
+		return 0;
 	}
 
 	send_event(ctx, &data);
@@ -1755,5 +1753,73 @@ CATCH:
 		}
 	}
 
+	return 0;
+}
+
+struct sched_process_exit_args {
+	__u64 pad;
+	char comm[16];
+	pid_t pid;
+	int prio;
+};
+
+int on_sched_process_exit(struct sched_process_exit_args *arg)
+{
+	struct data_t data = {};
+	struct task_struct *task = NULL;
+	unsigned int flags = 0;
+	pid_t tgid = 0;
+	pid_t pid = 0;
+
+	if (!arg) {
+		goto out;
+	}
+
+	// only used in older versions
+	pid = arg->pid;
+	tgid = arg->pid;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+	// only works on newer kernels
+	task = (struct task_struct *)bpf_get_current_task();
+	if (!task) {
+		goto out;
+	}
+
+	if (arg->pid == task->pid) {
+		pid = task->pid;
+		tgid = task->tgid;
+	}
+
+	bpf_probe_read(&flags, sizeof(flags), &task->flags);
+	if (flags & PF_KTHREAD)
+		goto out;
+
+#endif
+
+	if (tgid != pid) {
+		goto out;
+	}
+
+	data.event_time = bpf_ktime_get_ns();
+	data.type = EVENT_PROCESS_EXIT;
+	data.tid = pid;
+	data.pid = tgid;
+	data.start_time = task->start_time;
+	if (task && task->real_parent) {
+		data.ppid = task->real_parent->tgid;
+	}
+	send_event((struct pt_regs *)arg, &data);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
+	last_start_time.delete(&data.pid);
+	last_parent.delete(&data.pid);
+#ifdef CACHE_UDP
+	// Remove burst cache entries
+	//  We only need to do this for older kernels that do not have an LRU
+	ip_cache.delete(&data.pid);
+	ip6_cache.delete(&data.pid);
+#endif /* CACHE_UDP */
+#endif
+out:
 	return 0;
 }
