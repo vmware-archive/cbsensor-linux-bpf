@@ -1771,6 +1771,10 @@ int on_sched_process_exit(struct sched_process_exit_args *arg)
 	pid_t tgid = 0;
 	pid_t pid = 0;
 
+	if (!arg) {
+		goto out;
+	}
+
 	// only used in older versions
 	pid = arg->pid;
 	tgid = arg->pid;
