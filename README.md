@@ -2,6 +2,9 @@
 # cbsensor-linux-bpf
 
 ## Overview
+
+VMware has ended active development of this project, this repository will no longer be updated.
+
 The cbsensor-linux-bpf project currently provides a [BCC](https://github.com/iovisor/bcc) compatibile BPF C source code for general process, file and network events.
 
 ## Try it out [Python]
